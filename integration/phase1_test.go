@@ -244,7 +244,9 @@ func TestMetricsHealthAndReadiness(t *testing.T) {
 }
 
 func TestAdminLockout(t *testing.T) {
-	e := setupWith(t, func(c *config.Config) { c.AdminLockout = config.LockoutConfig{MaxFailures: 3, Window: time.Minute, Lockout: time.Minute} })
+	e := setupWith(t, func(c *config.Config) {
+		c.AdminLockout = config.LockoutConfig{MaxFailures: 3, Window: time.Minute, Lockout: time.Minute}
+	})
 	try := func(tok string) int {
 		req, _ := http.NewRequest("GET", e.gw.URL+"/admin/api/whoami", nil)
 		req.Header.Set("Authorization", "Bearer "+tok)
