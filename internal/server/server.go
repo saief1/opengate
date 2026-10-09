@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/opengate-dev/opengate/internal/billing"
 	"github.com/opengate-dev/opengate/internal/budget"
 	"github.com/opengate-dev/opengate/internal/config"
 	"github.com/opengate-dev/opengate/internal/pricing"
@@ -45,6 +46,8 @@ type Options struct {
 	Alerter *budget.Alerter
 	HTTP    *provider.HTTP
 	Sleep   func(ctx context.Context, d time.Duration) error // for tests
+	// StripeClient overrides the HTTP client used for Stripe (tests).
+	StripeClient *http.Client
 }
 
 // Server is the OpenGate HTTP application.
@@ -63,6 +66,10 @@ type Server struct {
 
 	metrics *gatewayMetrics
 	lockout *lockout
+
+	markups      *billing.Markups
+	routingRules *ttlCache[[]*store.RoutingRule]
+	stripe       *billing.Stripe // nil unless billing.stripe.enabled
 
 	keyMu    sync.Mutex
 	keyCache map[string]string // provider name -> decrypted API key ("" = none)
@@ -96,6 +103,16 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		enforcer: enf, alerter: o.Alerter, adapters: map[string]provider.Adapter{}, inflight: newInflight(),
 		sleep: o.Sleep, keyCache: map[string]string{}, metrics: newGatewayMetrics(),
 		lockout: newLockout(lc.MaxFailures, lc.Window, lc.Lockout)}
+	s.markups = billing.NewMarkups(o.Store, 10*time.Second)
+	s.routingRules = &ttlCache[[]*store.RoutingRule]{ttl: 5 * time.Second, load: func(ctx context.Context) ([]*store.RoutingRule, error) {
+		return o.Store.ListRoutingRules(ctx, "")
+	}}
+	if o.Config.Billing.Stripe.Enabled {
+		if err := o.Config.ValidateStripe(); err != nil {
+			return nil, err
+		}
+		s.stripe = billing.NewStripe(o.Config.Billing.Stripe, o.Config.StripeAPIKey, o.Store, o.StripeClient, o.Logger)
+	}
 	for _, t := range []string{config.TypeOpenAI, config.TypeAnthropic, config.TypeGemini, config.TypeOpenRouter} {
 		a, _ := provider.ForType(t, o.HTTP)
 		s.adapters[t] = a
@@ -111,6 +128,9 @@ func (s *Server) Enforcer() *budget.Enforcer { return s.enforcer }
 
 // Run executes background maintenance until ctx is cancelled.
 func (s *Server) Run(ctx context.Context) {
+	if s.stripe != nil {
+		go s.stripe.Run(ctx)
+	}
 	t := time.NewTicker(5 * time.Minute)
 	defer t.Stop()
 	for {
@@ -120,6 +140,9 @@ func (s *Server) Run(ctx context.Context) {
 		case <-t.C:
 			if err := s.store.PruneRateBuckets(ctx, time.Now().Add(-10*time.Minute)); err != nil {
 				s.log.Warn("prune rate buckets", "err", err)
+			}
+			if _, err := s.store.PurgeCache(ctx, ""); err != nil {
+				s.log.Warn("purge response cache", "err", err)
 			}
 		}
 	}

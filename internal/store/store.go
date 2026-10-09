@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -66,6 +67,40 @@ type Project struct {
 	Killed    bool      `json:"killed"`
 	CreatedAt time.Time `json:"created_at"`
 	ModelPolicy
+	// Guardrails overrides the server-wide guardrail defaults (nil = defaults).
+	Guardrails *GuardSettings `json:"guardrails"`
+	// CacheTTLSeconds > 0 opts the project into exact-match response caching.
+	CacheTTLSeconds int `json:"cache_ttl_seconds"`
+}
+
+// GuardSettings configures PII/secret redaction and prompt-injection
+// detection. Modes: pii off|log|redact|block, injection off|log|block.
+type GuardSettings struct {
+	PII        string   `json:"pii"`
+	Categories []string `json:"categories,omitempty"` // empty = all
+	Responses  bool     `json:"responses"`            // also scan (non-streaming) responses
+	Injection  string   `json:"injection"`
+}
+
+// SetProjectGuardrails stores (or with nil clears) a project's guardrail override.
+func (s *Store) SetProjectGuardrails(ctx context.Context, id string, g *GuardSettings) error {
+	v := ""
+	if g != nil {
+		b, err := json.Marshal(g)
+		if err != nil {
+			return err
+		}
+		v = string(b)
+	}
+	return s.execOne(ctx, `UPDATE projects SET guardrails=? WHERE id=?`, v, id)
+}
+
+// SetProjectCacheTTL sets the response cache TTL (0 disables caching).
+func (s *Store) SetProjectCacheTTL(ctx context.Context, id string, seconds int) error {
+	if seconds < 0 {
+		return errors.New("cache_ttl_seconds must not be negative")
+	}
+	return s.execOne(ctx, `UPDATE projects SET cache_ttl_s=? WHERE id=?`, seconds, id)
 }
 
 // CreateProject inserts a new project.
@@ -107,14 +142,14 @@ func (s *Store) EnsureProject(ctx context.Context, name string) (*Project, error
 	return s.CreateProject(ctx, name, false)
 }
 
-const projectCols = `id,org_id,name,log_bodies,killed,created_at,allowed_models,denied_models,max_tokens`
+const projectCols = `id,org_id,name,log_bodies,killed,created_at,allowed_models,denied_models,max_tokens,guardrails,cache_ttl_s`
 
 func scanProject(sc interface{ Scan(...any) error }) (*Project, error) {
 	var p Project
 	var lb, k int
 	var c int64
-	var allow, deny string
-	if err := sc.Scan(&p.ID, &p.OrgID, &p.Name, &lb, &k, &c, &allow, &deny, &p.MaxTokens); err != nil {
+	var allow, deny, guard string
+	if err := sc.Scan(&p.ID, &p.OrgID, &p.Name, &lb, &k, &c, &allow, &deny, &p.MaxTokens, &guard, &p.CacheTTLSeconds); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -122,6 +157,12 @@ func scanProject(sc interface{ Scan(...any) error }) (*Project, error) {
 	}
 	p.LogBodies, p.Killed, p.CreatedAt = lb == 1, k == 1, fromMS(c)
 	p.AllowedModels, p.DeniedModels = splitList(allow), splitList(deny)
+	if guard != "" {
+		var g GuardSettings
+		if json.Unmarshal([]byte(guard), &g) == nil {
+			p.Guardrails = &g
+		}
+	}
 	return &p, nil
 }
 

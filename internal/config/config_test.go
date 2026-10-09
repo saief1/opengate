@@ -70,3 +70,15 @@ func TestValidateSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestExampleConfigsLoad(t *testing.T) {
+	for _, f := range []string{"../../examples/opengate.example.yaml", "../../examples/demo.yaml"} {
+		c, err := Load(f)
+		if err != nil {
+			t.Fatalf("%s: %v", f, err)
+		}
+		if c.Guardrails.PII != "off" || c.Billing.Stripe.Unit != "cents" || c.SmartRouting.Auto.Alias != "auto" {
+			t.Fatalf("%s: %+v %+v", f, c.Guardrails, c.Billing.Stripe)
+		}
+	}
+}

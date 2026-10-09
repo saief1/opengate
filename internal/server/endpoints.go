@@ -31,14 +31,46 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		s.reject(w, rs, http.StatusBadRequest, "invalid_request_error", "invalid_request", "'model' and 'messages' are required.", 0)
 		return
 	}
-	targets, err := s.resolve(req.Model)
+	promptEst := estimateTokens(promptChars(&req))
+	estOut := req.MaxOutputTokens()
+	if estOut <= 0 {
+		estOut = s.cfg.DefaultMaxTokens
+	}
+	plan, err := s.planChat(rs, &req, promptEst, estOut)
 	if err != nil {
 		s.reject(w, rs, http.StatusNotFound, "invalid_request_error", "model_not_found", err.Error(), 0)
 		return
 	}
+	targets := plan.targets
+	if plan.route != "" {
+		// Routing must never let a key escape its model policy: drop routed
+		// targets it may not use, and fall back to the requested model.
+		var allowed []targetSpec
+		for _, t := range targets {
+			name := t.String()
+			if s.autoEnabled(req.Model) && plan.route == "auto:t"+strconv.Itoa(int(plan.class.Tier)) {
+				name = req.Model // allowing "auto" allows what it picks
+			}
+			if policyAllows(rs.key.ModelPolicy, name, t) && policyAllows(rs.proj.ModelPolicy, name, t) {
+				allowed = append(allowed, t)
+			}
+		}
+		if len(allowed) == 0 && !s.autoEnabled(req.Model) {
+			plan.route, plan.baseline = "", req.Model
+			if allowed, err = s.resolve(req.Model); err != nil {
+				s.reject(w, rs, http.StatusNotFound, "invalid_request_error", "model_not_found", err.Error(), 0)
+				return
+			}
+		}
+		targets = allowed
+	}
+	rs.log.Route = plan.route
 	targets, ok := s.filterTargets(w, rs, req.Model, targets)
 	if !ok {
 		return
+	}
+	if plan.route != "" {
+		w.Header().Set("X-OpenGate-Route", plan.route)
 	}
 	cap := tokenCap(rs)
 	if cap > 0 {
@@ -54,10 +86,20 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if outTokens <= 0 {
 		outTokens = s.cfg.DefaultMaxTokens
 	}
-	promptEst := estimateTokens(promptChars(&req))
+	ttl := s.cacheTTL(rs)
+	cacheKey := ""
+	if ttl > 0 {
+		cacheKey = s.cacheKey(rs)
+		if s.serveCached(w, rs, cacheKey) {
+			return
+		}
+		w.Header().Set("X-OpenGate-Cache", "MISS")
+	}
 	if !s.reserve(w, rs, s.estimateCost(targets, promptEst, outTokens)) {
 		return
 	}
+	rs.baseline = plan.baseline
+	rs.cacheKey, rs.cacheTTL = cacheKey, ttl
 	ctx, done := s.withInflight(rs)
 	defer done()
 
@@ -99,9 +141,19 @@ func (s *Server) unaryChat(ctx context.Context, w http.ResponseWriter, rs *reqSt
 		}
 	}
 	s.price(rs, res.Usage, res.UsageReported, promptEst, outChars)
+	body, withhold := s.guardResponse(rs, res.Body)
+	if withhold {
+		s.reject(w, rs, http.StatusBadGateway, "upstream_error", "guardrail_blocked",
+			"OpenGate: the upstream response was withheld by the data guardrail (found: "+rs.log.Guard+").", 0)
+		return
+	}
+	res.Body = body
 	rs.log.Status = http.StatusOK
 	if rs.proj.LogBodies {
 		rs.log.ResponseBody = s.truncate(res.Body)
+	}
+	if rs.cacheTTL > 0 {
+		s.storeCached(rs, rs.cacheKey, rs.cacheTTL, res.Body)
 	}
 	s.gatewayHeaders(w, rs)
 	w.Header().Set("X-OpenGate-Cost-USD", strconv.FormatFloat(rs.log.CostUSD, 'f', 8, 64))
@@ -143,6 +195,7 @@ func (s *Server) streamChat(ctx context.Context, w http.ResponseWriter, rs *reqS
 
 	var text strings.Builder
 	outChars := 0
+	guardStream := s.guardSettings(rs.proj).Responses
 	writeChunk := func(b []byte) error {
 		var cr provider.ChatResponse
 		if json.Unmarshal(b, &cr) == nil {
@@ -150,7 +203,7 @@ func (s *Server) streamChat(ctx context.Context, w http.ResponseWriter, rs *reqS
 				if c.Delta != nil {
 					if c.Delta.Content != nil {
 						outChars += len(*c.Delta.Content)
-						if rs.proj.LogBodies && text.Len() < s.cfg.BodyLogMaxBytes {
+						if (rs.proj.LogBodies || guardStream) && text.Len() < 256<<10 {
 							text.WriteString(*c.Delta.Content)
 						}
 					}
@@ -187,6 +240,7 @@ func (s *Server) streamChat(ctx context.Context, w http.ResponseWriter, rs *reqS
 
 	u, reported := stream.Usage()
 	s.price(rs, u, reported, promptEst, outChars)
+	s.guardStreamText(rs, text.String())
 	if rs.proj.LogBodies {
 		rs.log.ResponseBody = s.truncate([]byte(text.String()))
 	}
@@ -265,6 +319,15 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	promptEst := estimateTokens(chars)
+	ttl := s.cacheTTL(rs)
+	cacheKey := ""
+	if ttl > 0 {
+		cacheKey = s.cacheKey(rs)
+		if s.serveCached(w, rs, cacheKey) {
+			return
+		}
+		w.Header().Set("X-OpenGate-Cache", "MISS")
+	}
 	if !s.reserve(w, rs, s.estimateCost(targets, promptEst, 0)) {
 		return
 	}
@@ -287,6 +350,9 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		rs.log.PromptTokens = u.PromptTokens
 	}
 	rs.log.Status = http.StatusOK
+	if ttl > 0 {
+		s.storeCached(rs, cacheKey, ttl, res.Body)
+	}
 	s.gatewayHeaders(w, rs)
 	w.Header().Set("X-OpenGate-Cost-USD", strconv.FormatFloat(rs.log.CostUSD, 'f', 8, 64))
 	w.Header().Set("Content-Type", "application/json")
@@ -366,6 +432,13 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.price(rs, res.Usage, res.UsageReported, promptEst, 0)
+		body, withhold := s.guardResponse(rs, res.Body)
+		if withhold {
+			s.reject(w, rs, http.StatusBadGateway, "upstream_error", "guardrail_blocked",
+				"OpenGate: the upstream response was withheld by the data guardrail (found: "+rs.log.Guard+").", 0)
+			return
+		}
+		res.Body = body
 		rs.log.Status = http.StatusOK
 		if rs.proj.LogBodies {
 			rs.log.ResponseBody = s.truncate(res.Body)
@@ -481,6 +554,9 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	sort.Strings(aliases)
 	for _, alias := range aliases {
 		add(alias, "opengate-alias")
+	}
+	if a := s.cfg.SmartRouting.Auto; a.Enabled {
+		add(a.Alias, "opengate-auto")
 	}
 	for _, m := range s.pricing.Table().Models() {
 		prov, _, _ := strings.Cut(m, "/")

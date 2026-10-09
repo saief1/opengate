@@ -3,7 +3,7 @@
 # OPENGATE_ADMIN_TOKEN / OPENGATE_MASTER_KEY env vars. ${VAR} is expanded.
 
 listen: 127.0.0.1:8080          # OPENGATE_LISTEN (Docker image sets 0.0.0.0:8080)
-database: opengate.db           # OPENGATE_DATABASE — SQLite file
+database: opengate.db           # OPENGATE_DATABASE — SQLite file, or postgres://user:pass@host/db
 pricing_file: ""                # OPENGATE_PRICING_FILE — empty = built-in table (`opengate pricing`)
 max_request_bytes: 10485760     # 10 MiB
 body_log_max_bytes: 65536       # per body, only when a project opts in to body logging
@@ -34,3 +34,62 @@ retry:
 alerts:
   webhook_url: ${OPENGATE_ALERT_WEBHOOK_URL}
   thresholds: [0.8, 1.0]
+
+budgets:
+  strict: false                 # true: refuse requests whose worst case (max_tokens) exceeds the remaining budget
+  sync_interval: 0s             # re-read spend from the DB (default 5s with PostgreSQL, for multiple replicas)
+
+rate_limit:
+  backend: database             # database (persisted; shared across replicas on PostgreSQL) | memory
+
+metrics:
+  disabled: false               # GET /metrics (Prometheus); bearer OPENGATE_METRICS_TOKEN or the admin token
+  public: false
+
+log:
+  level: info                   # OPENGATE_LOG_LEVEL: debug|info|warn|error
+  format: json                  # OPENGATE_LOG_FORMAT: json|text
+
+admin_lockout:                  # per client IP
+  max_failures: 10
+  window: 5m
+  lockout: 15m
+trust_proxy_headers: false      # use X-Forwarded-For for the client IP (only behind your own proxy)
+
+# Smart routing. Rules (by prompt length, tags, headers, agent, cost
+# ceiling) are managed in the dashboard / admin API. The "auto" alias picks
+# the cheapest model meeting the request's estimated difficulty tier.
+smart_routing:
+  auto:
+    enabled: false              # example: true
+    alias: auto
+    baseline: openai/gpt-4.1    # savings are reported against this model
+    models:                     # tier 1 = simple, 2 = standard, 3 = hard
+      - {model: openai/gpt-4.1-nano, tier: 1}
+      - {model: gemini/gemini-2.5-flash, tier: 2}
+      - {model: openai/gpt-4.1-mini, tier: 2}
+      - {model: anthropic/claude-sonnet-4-5, tier: 3}
+      - {model: openai/gpt-4.1, tier: 3}
+
+# Server-wide guardrail defaults (projects can override in the dashboard).
+guardrails:
+  pii: off                      # off | log | redact | block
+  categories: []                # empty = all: secret, credit_card, iban, ssn, sin, email, phone
+  responses: false              # also scan responses (non-streaming: redact/block; streaming: log)
+  injection: off                # off | log | block
+
+billing:
+  customer_header: X-OpenGate-Customer   # falls back to the OpenAI "user" field
+  ignore_user_field: false
+  stripe:
+    enabled: false              # needs STRIPE_API_KEY in the environment
+    event_name: opengate_usage  # your Stripe Billing Meter's event_name
+    unit: cents                 # cents (billed USD x 100) | tokens
+    interval: 1h
+    lag: 15m
+
+cache:                          # exact-match response cache, opt-in per project or X-OpenGate-Cache-TTL header
+  disabled: false
+  max_ttl: 24h
+  max_entry_bytes: 1048576
+  share_across_customers: false

@@ -178,6 +178,9 @@ func reply(provider, model, prompt string) []string {
 		words = append(words, "You", "said:")
 		words = append(words, p...)
 	}
+	if strings.Contains(model, "leaky") { // emits PII the client never sent (response guardrail tests)
+		words = append(words, "Contact", "ops@leaky.example", "or", "4111-1111-1111-1111.")
+	}
 	return words
 }
 

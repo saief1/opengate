@@ -26,6 +26,7 @@ type gatewayMetrics struct {
 	adminFails *metrics.Counter
 	guard      *metrics.Counter
 	cacheHits  *metrics.Counter
+	saved      *metrics.Counter
 }
 
 func newGatewayMetrics() *gatewayMetrics {
@@ -42,6 +43,7 @@ func newGatewayMetrics() *gatewayMetrics {
 		adminFails: r.NewCounter("opengate_admin_auth_failures_total", "Failed admin authentications."),
 		guard:      r.NewCounter("opengate_guardrail_findings_total", "Guardrail findings by detector and action.", "detector", "action"),
 		cacheHits:  r.NewCounter("opengate_cache_hits_total", "Responses served from the OpenGate response cache."),
+		saved:      r.NewCounter("opengate_saved_usd_total", "Estimated USD saved vs. the requested/baseline model, by reason (routing|cache).", "reason"),
 	}
 	r.NewGaugeFunc("opengate_build_info", "Always 1; see the version label on /healthz.", func() float64 { return 1 })
 	return m
@@ -68,6 +70,14 @@ func (s *Server) observe(l *store.RequestLog) {
 	}
 	if l.CacheHit {
 		m.cacheHits.Inc()
+		m.saved.Add(l.BaselineCostUSD, "cache")
+	} else if l.Route != "" && l.BaselineCostUSD > l.CostUSD {
+		m.saved.Add(l.BaselineCostUSD-l.CostUSD, "routing")
+	}
+	if l.Guard != "" {
+		for _, c := range strings.Split(l.Guard, ",") {
+			m.guard.Inc(c, l.GuardAction)
+		}
 	}
 }
 

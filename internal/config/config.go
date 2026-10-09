@@ -44,11 +44,79 @@ type Config struct {
 	Metrics           MetricsConfig             `yaml:"metrics"`
 	Log               LogConfig                 `yaml:"log"`
 	AdminLockout      LockoutConfig             `yaml:"admin_lockout"`
+	SmartRouting      SmartRoutingConfig        `yaml:"smart_routing"`
+	Guardrails        GuardrailsConfig          `yaml:"guardrails"`
+	Billing           BillingConfig             `yaml:"billing"`
+	Cache             CacheConfig               `yaml:"cache"`
 
 	// Secrets are only ever read from the environment, never from YAML.
 	AdminToken   string `yaml:"-"`
 	MasterKey    string `yaml:"-"`
 	MetricsToken string `yaml:"-"` // OPENGATE_METRICS_TOKEN; falls back to the admin token
+	StripeAPIKey string `yaml:"-"` // STRIPE_API_KEY (only used when billing.stripe.enabled)
+}
+
+// SmartRoutingConfig configures the "auto" alias. Routing rules themselves
+// live in the database (admin API / dashboard).
+type SmartRoutingConfig struct {
+	Auto AutoConfig `yaml:"auto"`
+}
+
+// AutoConfig: requests for Alias are classified into a quality tier and sent
+// to the cheapest model of at least that tier.
+type AutoConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Alias   string `yaml:"alias"` // default "auto"
+	// Baseline is what savings are measured against (default: the most
+	// expensive tier-3 model).
+	Baseline string      `yaml:"baseline"`
+	Models   []AutoModel `yaml:"models"`
+}
+
+// AutoModel is one candidate model with its quality tier (1..3).
+type AutoModel struct {
+	Model string `yaml:"model"`
+	Tier  int    `yaml:"tier"`
+}
+
+// GuardrailsConfig holds server-wide guardrail defaults; projects can override.
+type GuardrailsConfig struct {
+	PII        string   `yaml:"pii"`        // off (default) | log | redact | block
+	Categories []string `yaml:"categories"` // empty = all
+	Responses  bool     `yaml:"responses"`  // also scan non-streaming responses
+	Injection  string   `yaml:"injection"`  // off (default) | log | block
+}
+
+// BillingConfig controls end-customer attribution and Stripe usage sync.
+type BillingConfig struct {
+	// CustomerHeader carries the end-customer ID (default X-OpenGate-Customer).
+	CustomerHeader string `yaml:"customer_header"`
+	// IgnoreUserField stops using the OpenAI "user" body field as the
+	// customer ID when the header is absent.
+	IgnoreUserField bool         `yaml:"ignore_user_field"`
+	Stripe          StripeConfig `yaml:"stripe"`
+}
+
+// StripeConfig reports per-customer usage as Stripe Billing meter events.
+type StripeConfig struct {
+	Enabled   bool          `yaml:"enabled"`
+	BaseURL   string        `yaml:"base_url"`   // default https://api.stripe.com
+	EventName string        `yaml:"event_name"` // meter event_name (default opengate_usage)
+	Unit      string        `yaml:"unit"`       // cents (billed USD x100, default) | tokens
+	Interval  time.Duration `yaml:"interval"`   // default 1h
+	// Lag excludes the most recent window so in-flight requests are
+	// logged before their window is reported (default 15m).
+	Lag time.Duration `yaml:"lag"`
+}
+
+// CacheConfig tunes the opt-in exact-match response cache.
+type CacheConfig struct {
+	Disabled      bool          `yaml:"disabled"`
+	MaxTTL        time.Duration `yaml:"max_ttl"`         // cap for per-request TTLs (default 24h)
+	MaxEntryBytes int           `yaml:"max_entry_bytes"` // default 1 MiB
+	// ShareAcrossCustomers lets identical requests from different end
+	// customers share entries (default false: the customer ID is part of the key).
+	ShareAcrossCustomers bool `yaml:"share_across_customers"`
 }
 
 // BudgetsConfig tunes spend enforcement.
@@ -218,6 +286,7 @@ func (c *Config) applyEnv() {
 	set(&c.Log.Level, "OPENGATE_LOG_LEVEL")
 	set(&c.Log.Format, "OPENGATE_LOG_FORMAT")
 	set(&c.RateLimit.Backend, "OPENGATE_RATE_LIMIT_BACKEND")
+	set(&c.StripeAPIKey, "STRIPE_API_KEY")
 	// OPENGATE_PROVIDER_<NAME>_BASE_URL overrides a provider base URL.
 	for name, p := range c.Providers {
 		key := "OPENGATE_PROVIDER_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_BASE_URL"
@@ -292,6 +361,9 @@ func (c *Config) Normalize() error {
 	if c.AdminLockout.Lockout <= 0 {
 		c.AdminLockout.Lockout = 15 * time.Minute
 	}
+	if err := c.normalizePhase2(); err != nil {
+		return err
+	}
 	for name, p := range c.Providers {
 		switch p.Type {
 		case TypeOpenAI, TypeAnthropic, TypeGemini, TypeOpenRouter:
@@ -331,6 +403,81 @@ func (c *Config) ValidateSecrets() error {
 	}
 	if c.MasterKey == "" {
 		return errors.New("OPENGATE_MASTER_KEY must be set (generate one with `opengate keygen`)")
+	}
+	return nil
+}
+
+func (c *Config) normalizePhase2() error {
+	a := &c.SmartRouting.Auto
+	if a.Alias == "" {
+		a.Alias = "auto"
+	}
+	if a.Enabled && len(a.Models) == 0 {
+		return errors.New("smart_routing.auto.models must list at least one model")
+	}
+	for _, m := range a.Models {
+		if m.Tier < 1 || m.Tier > 3 {
+			return fmt.Errorf("smart_routing.auto: model %q tier must be 1..3", m.Model)
+		}
+		if _, _, ok := strings.Cut(m.Model, "/"); !ok {
+			return fmt.Errorf("smart_routing.auto: model %q must look like provider/model", m.Model)
+		}
+	}
+	if _, clash := c.Routes[a.Alias]; clash && a.Enabled {
+		return fmt.Errorf("smart_routing.auto.alias %q clashes with a route", a.Alias)
+	}
+	g := &c.Guardrails
+	switch g.PII {
+	case "":
+		g.PII = "off"
+	case "off", "log", "redact", "block":
+	default:
+		return fmt.Errorf("guardrails.pii: want off|log|redact|block, got %q", g.PII)
+	}
+	switch g.Injection {
+	case "":
+		g.Injection = "off"
+	case "off", "log", "block":
+	default:
+		return fmt.Errorf("guardrails.injection: want off|log|block, got %q", g.Injection)
+	}
+	if c.Billing.CustomerHeader == "" {
+		c.Billing.CustomerHeader = "X-OpenGate-Customer"
+	}
+	st := &c.Billing.Stripe
+	if st.BaseURL == "" {
+		st.BaseURL = "https://api.stripe.com"
+	}
+	st.BaseURL = strings.TrimRight(st.BaseURL, "/")
+	if st.EventName == "" {
+		st.EventName = "opengate_usage"
+	}
+	switch st.Unit {
+	case "":
+		st.Unit = "cents"
+	case "cents", "tokens":
+	default:
+		return fmt.Errorf("billing.stripe.unit: want cents|tokens, got %q", st.Unit)
+	}
+	if st.Interval <= 0 {
+		st.Interval = time.Hour
+	}
+	if st.Lag <= 0 {
+		st.Lag = 15 * time.Minute
+	}
+	if c.Cache.MaxTTL <= 0 {
+		c.Cache.MaxTTL = 24 * time.Hour
+	}
+	if c.Cache.MaxEntryBytes <= 0 {
+		c.Cache.MaxEntryBytes = 1 << 20
+	}
+	return nil
+}
+
+// ValidateStripe checks that Stripe sync has a key when enabled.
+func (c *Config) ValidateStripe() error {
+	if c.Billing.Stripe.Enabled && c.StripeAPIKey == "" {
+		return errors.New("billing.stripe.enabled requires STRIPE_API_KEY in the environment")
 	}
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -43,6 +44,7 @@ func (s *Server) registerAdmin(mux *http.ServeMux) {
 	h("DELETE /admin/api/provider-keys/{id}", s.adminDeleteProviderKey)
 	h("GET /admin/api/pricing", s.adminPricing)
 	h("POST /admin/api/pricing/reload", s.adminReloadPricing)
+	s.registerAdminPhase2(h)
 	mux.Handle("/admin/", s.adminAuth(func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "invalid_request_error", "not_found", "unknown admin endpoint")
 	}))
@@ -76,6 +78,9 @@ func decode(r *http.Request, v any) error {
 	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 1<<20))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
+		if errors.Is(err, io.EOF) {
+			return err
+		}
 		return fmt.Errorf("invalid JSON body: %w", err)
 	}
 	return nil
@@ -114,6 +119,8 @@ func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
 	agents, _ := s.store.BreakdownSince(ctx, store.StatsFilter{}, "agent", since, 8)
 	models, _ := s.store.BreakdownSince(ctx, store.StatsFilter{}, "model", since, 8)
 	projects, _ := s.store.BreakdownSince(ctx, store.StatsFilter{}, "project", since, 8)
+	routes, _ := s.store.BreakdownSince(ctx, store.StatsFilter{}, "route", since, 8)
+	customers, _ := s.store.BreakdownSince(ctx, store.StatsFilter{}, "customer", since, 8)
 	names := map[string]string{}
 	if ps, err := s.store.ListProjects(ctx); err == nil {
 		for _, p := range ps {
@@ -128,6 +135,7 @@ func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{
 		"days": days, "since": since, "today": sToday, "month": sMonth, "range": sRange,
 		"series": series, "top_agents": agents, "top_models": models, "top_projects": projects,
+		"top_routes": routes, "top_customers": customers,
 	})
 }
 

@@ -251,6 +251,66 @@ var migrations = []migration{
   last_ms BIGINT NOT NULL
 )`,
 	}},
+	{3, "routing rules, guardrails, customers and billing, response cache", []string{
+		`ALTER TABLE projects ADD COLUMN guardrails TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE projects ADD COLUMN cache_ttl_s BIGINT NOT NULL DEFAULT 0`,
+		`CREATE TABLE IF NOT EXISTS routing_rules (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL,
+  project_id TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL,
+  priority INTEGER NOT NULL DEFAULT 100,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  match_json TEXT NOT NULL,
+  target TEXT NOT NULL,
+  fallbacks TEXT NOT NULL DEFAULT '',
+  created_at BIGINT NOT NULL
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_routing_org ON routing_rules(org_id, priority)`,
+		`CREATE TABLE IF NOT EXISTS customers (
+  project_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  stripe_customer_id TEXT NOT NULL DEFAULT '',
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  PRIMARY KEY (project_id, id)
+)`,
+		`CREATE TABLE IF NOT EXISTS markup_rules (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL,
+  project_id TEXT NOT NULL DEFAULT '',
+  customer_id TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  markup_pct DOUBLE PRECISION NOT NULL,
+  created_at BIGINT NOT NULL
+)`,
+		`CREATE TABLE IF NOT EXISTS stripe_sync (
+  project_id TEXT NOT NULL,
+  customer_id TEXT NOT NULL,
+  synced_to BIGINT NOT NULL,
+  remainder DOUBLE PRECISION NOT NULL DEFAULT 0,
+  last_value BIGINT NOT NULL DEFAULT 0,
+  last_error TEXT NOT NULL DEFAULT '',
+  updated_at BIGINT NOT NULL,
+  PRIMARY KEY (project_id, customer_id)
+)`,
+		`CREATE TABLE IF NOT EXISTS response_cache (
+  cache_key TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  provider_model TEXT NOT NULL,
+  body TEXT NOT NULL,
+  prompt_tokens BIGINT NOT NULL DEFAULT 0,
+  completion_tokens BIGINT NOT NULL DEFAULT 0,
+  cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
+  hits BIGINT NOT NULL DEFAULT 0,
+  created_at BIGINT NOT NULL,
+  expires_at BIGINT NOT NULL
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_cache_expires ON response_cache(expires_at)`,
+	}},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

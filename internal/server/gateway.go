@@ -92,6 +92,10 @@ type reqState struct {
 	body   []byte
 	raw    map[string]json.RawMessage
 	r      *http.Request
+
+	baseline string        // model savings are measured against ("" = none)
+	cacheKey string        // response cache key when caching applies
+	cacheTTL time.Duration // 0 = do not cache
 }
 
 func (s *Server) truncate(b []byte) string {
@@ -108,6 +112,7 @@ func (s *Server) finish(rs *reqState) {
 	// Use a fresh context: the client may already be gone, but the spend must be recorded.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	s.bill(ctx, rs)
 	if err := s.store.InsertLog(ctx, rs.log); err != nil {
 		s.log.Error("insert request log", "err", err, "request_id", rs.log.ID)
 	}
@@ -158,9 +163,6 @@ func (s *Server) begin(w http.ResponseWriter, r *http.Request, endpoint string) 
 	var stream bool
 	_ = json.Unmarshal(rs.raw["stream"], &stream)
 	rs.log.Model, rs.log.Stream = model, stream
-	if proj.LogBodies {
-		rs.log.RequestBody = s.truncate(body)
-	}
 	if key.Killed {
 		s.reject(w, rs, http.StatusForbidden, "permission_error", "key_killed", "OpenGate: this key has been disabled by the kill switch.", 0)
 		return nil
@@ -172,6 +174,15 @@ func (s *Server) begin(w http.ResponseWriter, r *http.Request, endpoint string) 
 	if model == "" {
 		s.reject(w, rs, http.StatusBadRequest, "invalid_request_error", "invalid_request", "'model' is required.", 0)
 		return nil
+	}
+	rs.log.CustomerID = s.customerID(r, rs.raw)
+	if !s.applyRequestGuard(w, rs) {
+		return nil
+	}
+	// Bodies are logged only after the guardrail ran, so redacted values
+	// are never persisted and blocked requests store no body at all.
+	if proj.LogBodies {
+		rs.log.RequestBody = s.truncate(rs.body)
 	}
 	return rs
 }
@@ -408,6 +419,9 @@ func (s *Server) price(rs *reqState, u provider.Usage, reported bool, promptEsti
 	rs.log.CachedTokens, rs.log.CacheWriteTokens = u.Cached(), u.CacheWrite()
 	rs.log.CostUSD, _ = s.pricing.Table().CostTokens(rs.log.Provider, rs.log.ProviderModel, pricing.Tokens{
 		Prompt: u.PromptTokens, Completion: u.CompletionTokens, CacheRead: u.Cached(), CacheWrite: u.CacheWrite()})
+	if rs.log.Route != "" && rs.baseline != "" {
+		rs.log.BaselineCostUSD = s.baselineCost(rs, rs.baseline)
+	}
 }
 
 func (s *Server) gatewayHeaders(w http.ResponseWriter, rs *reqState) {

@@ -10,3 +10,12 @@ routes:
   smart: [openai/gpt-4o-fail, anthropic/claude-sonnet-4-5]
   cheap: [openai/gpt-4o-mini, gemini/gemini-2.5-flash]
 retry: {max_attempts: 2, initial_backoff: 50ms, max_backoff: 500ms}
+smart_routing:
+  auto:
+    enabled: true
+    baseline: openai/gpt-4.1
+    models:
+      - {model: openai/gpt-4.1-nano, tier: 1}
+      - {model: gemini/gemini-2.5-flash, tier: 2}
+      - {model: anthropic/claude-sonnet-4-5, tier: 3}
+      - {model: openai/gpt-4.1, tier: 3}

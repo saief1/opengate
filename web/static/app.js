@@ -60,7 +60,7 @@ async function api(path, opts = {}) {
 
 function statusBadge(l) {
   if (l.status < 400) return el("span", { class: "badge ok" }, l.status);
-  const blocked = ["budget_exceeded", "key_killed", "project_killed", "killed", "killed_mid_stream", "rate_limit_exceeded"].includes(l.error_code);
+  const blocked = ["budget_exceeded", "key_killed", "project_killed", "killed", "killed_mid_stream", "rate_limit_exceeded", "model_not_allowed", "max_tokens_exceeded", "guardrail_blocked", "prompt_injection"].includes(l.error_code);
   return el("span", { class: "badge " + (blocked ? "warn" : "err"), title: l.error_message || "" }, l.status + " " + (l.error_code || ""));
 }
 
@@ -148,7 +148,8 @@ const pages = {
         stat("Spend today (UTC)", usd(o.today.cost_usd), num(o.today.tokens) + " tokens"),
         stat("Spend this month", usd(o.month.cost_usd), num(o.month.requests) + " requests"),
         stat("Requests today", num(o.today.requests), errRate + "% errors", o.today.errors > 0 && errRate > 5),
-        stat("Blocked by guardrails today", num(o.today.blocked), "avg latency " + Math.round(o.today.avg_latency_ms || 0) + " ms")),
+        stat("Blocked by guardrails today", num(o.today.blocked), "avg latency " + Math.round(o.today.avg_latency_ms || 0) + " ms"),
+        savedStat(o.month)),
       el("div", { class: "grid two" },
         card(`Spend over time — ${usd(o.range.cost_usd)} in ${o.days} days`, spendChart(o.series, o.days, o.since)),
         el("div", { class: "grid" },
@@ -251,6 +252,13 @@ const pages = {
   },
 };
 
+function savedStat(m) {
+  const total = (m.saved_usd || 0) + (m.cache_saved_usd || 0);
+  return el("div", { class: "card stat saved" }, el("div", { class: "label" }, "Saved this month"),
+    el("div", { class: "value" }, usd(total)),
+    el("div", { class: "sub" }, `routing ${usdSmart(m.saved_usd)} · cache ${num(m.cache_hits)} hits`));
+}
+
 function topList(items) {
   if (!items || !items.length) return [el("div", { class: "empty" }, "No traffic yet.")];
   const max = Math.max(...items.map((i) => i.cost_usd), 0.000001);
@@ -268,7 +276,10 @@ function logTable(logs) {
     el("td", { class: "num" }, num(l.prompt_tokens + l.completion_tokens) + (l.usage_estimated ? "*" : "")),
     el("td", { class: "num" }, usdSmart(l.cost_usd)),
     el("td", { class: "num" }, num(l.latency_ms) + " ms"),
-    el("td", {}, l.stream ? el("span", { class: "badge info" }, "stream") : ""),
+    el("td", { class: "tags" }, l.stream ? el("span", { class: "badge info" }, "stream") : null,
+      l.cache_hit ? el("span", { class: "badge ok" }, "cache") : null,
+      l.route ? el("span", { class: "badge route", title: "Smart routing: " + l.route }, l.route.replace(/^rule:/, "")) : null,
+      l.guard ? el("span", { class: "badge " + (l.guard_action === "blocked" ? "err" : "warn"), title: l.guard_action + ": " + l.guard }, "guard") : null),
     el("td", { class: "num" }, l.attempts > 1 ? el("span", { class: "badge warn" }, "×" + l.attempts) : l.attempts),
     el("td", {}, statusBadge(l))));
   return table(["When", "Project", "Agent / key", "Model", "#Tokens", "#Cost", "#Latency", "", "#Tries", "Status"], rows, "No requests yet.");
@@ -278,7 +289,9 @@ async function logDetail(id) {
   const l = await api("/logs/" + id);
   const kv = [["Request ID", l.id], ["Time", fmtTime(l.ts)], ["Project", projName(l.project_id)], ["Key", keyName(l.key_id)], ["Agent / user", (l.agent || "—") + " / " + (l.user || "—")],
     ["Requested model", l.model], ["Served by", l.provider ? l.provider + "/" + l.provider_model : "—"], ["Tokens", `${num(l.prompt_tokens)} in / ${num(l.completion_tokens)} out${l.usage_estimated ? " (estimated)" : ""}`],
-    ["Cost", usd(l.cost_usd, 6)], ["Latency", l.latency_ms + " ms"], ["Attempts", l.attempts], ["Status", l.status + (l.error_code ? " " + l.error_code : "")]];
+    ["Cost", usd(l.cost_usd, 6) + (l.baseline_cost_usd > l.cost_usd ? `  (requested model: ${usd(l.baseline_cost_usd, 6)}, saved ${usd(l.baseline_cost_usd - l.cost_usd, 6)})` : "")],
+    ["Customer", l.customer_id || "—"], ["Billed", l.billed_usd ? usd(l.billed_usd, 6) : "—"], ["Route", l.route || (l.cache_hit ? "cache hit" : "—")],
+    ["Guardrails", l.guard ? `${l.guard_action}: ${l.guard}` : "—"], ["Latency", l.latency_ms + " ms"], ["Attempts", l.attempts], ["Status", l.status + (l.error_code ? " " + l.error_code : "")]];
   modal(el("h2", {}, "Request detail"), el("div", { class: "kv" }, kv.flatMap(([k, v]) => [el("div", {}, k), el("div", {}, v)])),
     l.error_message ? el("div", {}, el("h2", {}, "Error"), el("pre", {}, l.error_message)) : null,
     l.request_body ? el("div", {}, el("h2", {}, "Request body"), el("pre", {}, pretty(l.request_body))) : el("p", { class: "muted" }, "Bodies are not logged for this project (opt-in per project)."),

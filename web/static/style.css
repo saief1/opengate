@@ -32,7 +32,10 @@ main { padding: 24px 32px 48px; min-width: 0; }
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; }
 .card h2 { font-size: 14px; margin: 0 0 14px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .6px; }
 .grid { display: grid; gap: 16px; }
-.stats { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 16px; }
+.stats { grid-template-columns: repeat(5, minmax(0, 1fr)); margin-bottom: 16px; }
+.stat.saved .value { color: #3fd69f; }
+.badge.route { background: rgba(96,165,250,.14); color: #93c5fd; }
+td.tags .badge { margin-right: 4px; }
 .two { grid-template-columns: 2fr 1fr; align-items: start; }
 .half { grid-template-columns: 1fr 1fr; }
 .stat .label { color: var(--muted); font-size: 12.5px; font-weight: 500; }
