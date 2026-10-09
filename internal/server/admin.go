@@ -141,7 +141,7 @@ func (s *Server) adminLog(w http.ResponseWriter, r *http.Request) {
 		storeErr(w, err)
 		return
 	}
-	if p, err := s.store.GetProject(r.Context(), l.ProjectID); err == nil && p.OrgID != orgID(r) {
+	if p, err := s.store.GetProject(r.Context(), l.ProjectID); err != nil || p.OrgID != orgID(r) {
 		storeErr(w, store.ErrNotFound)
 		return
 	}

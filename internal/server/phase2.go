@@ -358,10 +358,15 @@ func (s *Server) expand(model string, req *provider.ChatRequest, rs *reqState, p
 func (s *Server) planChat(rs *reqState, req *provider.ChatRequest, promptTokens, outTokens int) (*routePlan, error) {
 	requested := req.Model
 	plan := &routePlan{baseline: requested}
-	rules := s.routingRules.get(rs.r.Context())
+	var rules []*store.RoutingRule
+	for _, r := range s.routingRules.get(rs.r.Context()) {
+		if r.OrgID == rs.proj.OrgID { // evaluate only this org's rules
+			rules = append(rules, r)
+		}
+	}
 	target, fallbacks := requested, []string(nil)
 	if len(rules) > 0 {
-		d := routing.Evaluate(rules, routing.Request{Model: requested, PromptTokens: promptTokens, Agent: rs.key.Agent, ProjectID: rs.proj.ID,
+		d := routing.Evaluate(rules, routing.Request{Model: requested, PromptTokens: promptTokens, Agent: rs.key.Agent, ProjectID: rs.proj.ID, OrgID: rs.proj.OrgID,
 			Headers: rs.r.Header, EstCost: func(m string) float64 {
 				ts, err := s.expand(m, req, rs, promptTokens, &routePlan{})
 				if err != nil || len(ts) == 0 {
@@ -369,7 +374,7 @@ func (s *Server) planChat(rs *reqState, req *provider.ChatRequest, promptTokens,
 				}
 				return s.estimateCost(ts[:1], promptTokens, outTokens)
 			}})
-		if d != nil && d.Rule.OrgID == rs.proj.OrgID {
+		if d != nil {
 			target, fallbacks = d.Target, d.Fallbacks
 			plan.route = "rule:" + d.Rule.Name
 		}

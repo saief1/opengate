@@ -716,7 +716,7 @@ async function start() {
   const inv = /#invite=([\w-]+)/.exec(location.hash);
   if (inv) {
     try {
-      pages.invite = { token: inv[1], ...(await api("/auth/invites/" + inv[1], { quiet: true })) };
+      pages.invite = { token: inv[1], ...(await api("/auth/invites/preview", { method: "POST", quiet: true, body: { token: inv[1] } })) };
       $("invite-banner").textContent = `You're invited to ${pages.invite.org} as ${pages.invite.role} (${pages.invite.email}). ` + (pages.invite.existing_user ? "Confirm with your password." : "Choose a password to create your account.");
       $("invite-banner").classList.remove("hidden"); $("login-tabs").classList.add("hidden");
     } catch { $("login-error").textContent = "This invite link is invalid, used or expired."; }

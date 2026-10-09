@@ -178,7 +178,7 @@ func TestUsersSessionsRolesInvitesAudit(t *testing.T) {
 		t.Fatal("invite path")
 	}
 	viewer := e.browser()
-	pv := viewer.do("GET", "/admin/api/auth/invites/"+tok, nil, 200)
+	pv := viewer.do("POST", "/admin/api/auth/invites/preview", map[string]any{"token": tok}, 200)
 	if pv["email"] != "viewer@example.com" || pv["existing_user"] != false {
 		t.Fatalf("invite preview: %v", pv)
 	}

@@ -248,21 +248,26 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-  "/admin/api/auth/invites/{token}":
-    get:
+  /admin/api/auth/invites/preview:
+    post:
       tags:
         - "Auth"
-      summary: "Preview an invite"
-      operationId: "get_auth_invites_token"
+      summary: "Preview an invite (token in the body, never in the URL)"
+      operationId: "post_auth_invites_preview"
       security:
         - {}
         - session: []
-      parameters:
-        - name: "token"
-          in: "path"
-          required: true
-          schema:
-            type: "string"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: "object"
+              properties:
+                token:
+                  type: "string"
+              required:
+                - "token"
       responses:
         "200":
           description: "OK"
@@ -277,6 +282,8 @@ paths:
                     type: "string"
                   role:
                     type: "string"
+                  existing_user:
+                    type: "boolean"
         "400":
           description: "Error"
           content:

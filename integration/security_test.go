@@ -1,7 +1,8 @@
 package integration
 
-// Regression tests for the 2026-10-09 security review
-// (/workspace/opengate-security-review.md): H1, M1-M5 and the cheap LOW items.
+// Regression tests for findings of the internal pre-release security reviews
+// (org scoping, token caps, passthrough spend, customer attribution,
+// lockout, cross-org routing, invite handling).
 
 import (
 	"bufio"
@@ -380,4 +381,62 @@ func TestInviteRoleCapAndSingleUse(t *testing.T) {
 	nb := e.browser()
 	nb.do("POST", "/admin/api/auth/invites/accept", map[string]any{"token": tok, "name": "New", "password": "new-password-1234"}, 200)
 	e.browser().do("POST", "/admin/api/auth/invites/accept", map[string]any{"token": tok, "name": "Again", "password": "new-password-1234"}, 404)
+}
+
+// v1.0.1 N1: another org's catch-all rule must not shadow this org's rules
+// (evaluation, not just the admin API, is org-scoped).
+func TestRoutingRulesAreOrgScoped(t *testing.T) {
+	e := setup(t)
+	acme := e.admin("POST", "/admin/api/orgs", map[string]any{"name": "Acme"}, 201)["id"].(string)
+	e.adminOrg(acme, "POST", "/admin/api/provider-keys", map[string]any{"provider": "openai", "key": "sk-acme-only-123456"}, 201)
+	e.adminOrg(acme, "POST", "/admin/api/routing/rules", map[string]any{"name": "acme-catch-all", "priority": 0,
+		"target": "openai/gpt-4o-mini"}, 200)
+	e.admin("POST", "/admin/api/routing/rules", map[string]any{"name": "default-rule", "priority": 10,
+		"match": map[string]any{"models": []string{"openai/gpt-4o"}}, "target": "openai/gpt-4.1-nano"}, 200)
+	key, _, _ := e.newKey("default-bot", "", nil)
+	r := e.chat(key, map[string]any{"model": "openai/gpt-4o", "messages": msgs("hi")})
+	decodeJSON(t, r)
+	if r.StatusCode != 200 || r.Header.Get("X-OpenGate-Route") != "rule:default-rule" {
+		t.Fatalf("default org routing shadowed by acme rule: %d route=%q", r.StatusCode, r.Header.Get("X-OpenGate-Route"))
+	}
+	ak := e.adminOrg(acme, "POST", "/admin/api/keys", map[string]any{"name": "acme-bot"}, 201)["key"].(string)
+	r = e.chat(ak, map[string]any{"model": "openai/gpt-4o", "messages": msgs("hi")})
+	decodeJSON(t, r)
+	if r.Header.Get("X-OpenGate-Route") != "rule:acme-catch-all" {
+		t.Fatalf("acme rule not applied to acme: %q", r.Header.Get("X-OpenGate-Route"))
+	}
+	pv := e.admin("POST", "/admin/api/routing/preview", map[string]any{"request": map[string]any{"model": "openai/gpt-4o", "messages": msgs("x")}}, 200)
+	if pv["route"] != "rule:default-rule" {
+		t.Fatalf("preview uses other org's rules: %v", pv["route"])
+	}
+}
+
+// v1.0.1 N2/N4: invite preview takes the token in the body only, and
+// accepting an invite never demotes an existing member (incl. the owner).
+func TestInvitePreviewAndNoRoleOverwrite(t *testing.T) {
+	e := setup(t)
+	e.mkUser("owner@example.test", "owner-password-123", "org_default", "owner")
+	e.mkUser("admin2@example.test", "admin2-password-123", "org_default", "admin")
+	admin := e.browser()
+	admin.do("POST", "/admin/api/auth/login", map[string]any{"email": "admin2@example.test", "password": "admin2-password-123"}, 200)
+	tok := admin.do("POST", "/admin/api/invites", map[string]any{"email": "owner@example.test", "role": "viewer"}, 201)["token"].(string)
+	// The old GET-with-token-in-path route is gone.
+	req, _ := http.NewRequest("GET", e.gw.URL+"/admin/api/auth/invites/"+tok, nil)
+	if resp, _ := http.DefaultClient.Do(req); resp.StatusCode == 200 {
+		t.Fatal("token-in-URL preview still served")
+	}
+	ob := e.browser()
+	pv := ob.do("POST", "/admin/api/auth/invites/preview", map[string]any{"token": tok}, 200)
+	if pv["role"] != "viewer" || pv["existing_user"] != true {
+		t.Fatalf("preview: %v", pv)
+	}
+	acc := ob.do("POST", "/admin/api/auth/invites/accept", map[string]any{"token": tok, "password": "owner-password-123"}, 200)
+	if acc["role"] != "owner" {
+		t.Fatalf("owner demoted by invite: %v", acc)
+	}
+	for _, m := range e.admin("GET", "/admin/api/members", nil, 200)["data"].([]any) {
+		if mm := m.(map[string]any); mm["email"] == "owner@example.test" && mm["role"] != "owner" {
+			t.Fatalf("membership changed: %v", mm)
+		}
+	}
 }

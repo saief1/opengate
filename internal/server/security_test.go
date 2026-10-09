@@ -89,3 +89,21 @@ func TestNormalizeMaxTokens(t *testing.T) {
 		}
 	}
 }
+
+// v1.0.1 N3: argon2id work is bounded; a saturated gate answers 429.
+func TestPasswordGateSaturates(t *testing.T) {
+	s := &Server{pwSem: make(chan struct{}, 1)}
+	r := httptest.NewRequest("POST", "/admin/api/auth/login", nil)
+	if !s.pwSlot(httptest.NewRecorder(), r) {
+		t.Fatal("first slot must be granted")
+	}
+	w := httptest.NewRecorder()
+	start := time.Now()
+	if s.pwSlot(w, r) || w.Code != 429 || time.Since(start) < time.Second {
+		t.Fatalf("saturated gate: code=%d after %v", w.Code, time.Since(start))
+	}
+	s.pwFree()
+	if !s.pwSlot(httptest.NewRecorder(), r) {
+		t.Fatal("slot must be reusable after free")
+	}
+}

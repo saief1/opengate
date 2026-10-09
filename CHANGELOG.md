@@ -3,6 +3,18 @@
 All notable changes to OpenGate. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project uses [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] - 2026-10-09
+
+### Security
+- Routing rules are evaluated per organization only. Before this fix, an enabled org-wide rule in one org could win evaluation for another org's requests and was then discarded, so the other org's own rules silently stopped applying. Covers both live traffic and the routing preview.
+- The invite preview is now `POST /admin/api/auth/invites/preview` with the token in the body, so invite tokens no longer appear in URLs or access logs. The old `GET /admin/api/auth/invites/{token}` route is removed.
+- Argon2id password work (login, sign-up, invite accept, password change) is capped at 2×CPU concurrent operations. Excess requests get `429 auth_busy`. This prevents memory exhaustion and keeps parallel guessing from outrunning the lockout.
+- Accepting an invite never changes an existing membership: the higher of the current and invited roles is kept, so an owner can't be demoted (and an org can't lose its last owner) through an invite.
+- `GET /admin/api/logs/{id}` now fails closed if the log's project can't be resolved.
+
+### Changed
+- The demo account is now `demo@example.com` / `demo-only-password`.
+
 ## [1.0.0] - 2026-10-09
 
 First public release.

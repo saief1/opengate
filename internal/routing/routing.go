@@ -20,7 +20,10 @@ type Request struct {
 	PromptTokens int    // estimated
 	Agent        string
 	ProjectID    string
-	Headers      http.Header
+	// OrgID is the requesting project's organization. Rules of other orgs
+	// never match (they must not shadow this org's rules).
+	OrgID   string
+	Headers http.Header
 	// EstCost returns the estimated cost of this request on a model name
 	// (alias or provider/model); used for cost-ceiling rules.
 	EstCost func(model string) float64
@@ -55,7 +58,7 @@ func matchPattern(p, name string) bool {
 
 // Matches reports whether a rule's conditions hold for r.
 func Matches(rule *store.RoutingRule, r Request) bool {
-	if !rule.Enabled || (rule.ProjectID != "" && rule.ProjectID != r.ProjectID) {
+	if !rule.Enabled || rule.OrgID != r.OrgID || (rule.ProjectID != "" && rule.ProjectID != r.ProjectID) {
 		return false
 	}
 	m := rule.Match

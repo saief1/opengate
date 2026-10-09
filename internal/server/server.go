@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -74,8 +75,9 @@ type Server struct {
 	routingRules *ttlCache[[]*store.RoutingRule]
 	stripe       *billing.Stripe // nil unless billing.stripe.enabled
 
-	trusted    []*net.IPNet // trusted_proxies
-	active     atomic.Int64 // requests in the gateway (max_inflight)
+	trusted    []*net.IPNet  // trusted_proxies
+	active     atomic.Int64  // requests in the gateway (max_inflight)
+	pwSem      chan struct{} // bounds concurrent argon2id hashing
 	sprayMu    sync.Mutex
 	sprayCount map[string]int
 
@@ -118,6 +120,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		s.log.Warn("trust_proxy_headers is on without trusted_proxies: only the rightmost X-Forwarded-For hop is used; set trusted_proxies to your proxy CIDRs")
 	}
 	s.sprayCount = map[string]int{}
+	s.pwSem = make(chan struct{}, 2*runtime.NumCPU())
 	for _, c := range o.Config.TrustedProxies {
 		_, n, err := net.ParseCIDR(c)
 		if err != nil {

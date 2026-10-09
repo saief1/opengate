@@ -13,7 +13,7 @@ high-severity issues within 14 days. We're happy to credit reporters.
 
 ## Supported versions
 
-Until 1.0, only the latest release receives security fixes.
+Only the latest 1.x release receives security fixes.
 
 ## Threat model (summary)
 

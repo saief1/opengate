@@ -26,7 +26,9 @@ func (s *Server) registerAuth(mux *http.ServeMux, h func(string, http.HandlerFun
 	pub("POST /admin/api/auth/logout", s.authLogout)
 	pub("GET /admin/api/auth/me", s.authMe)
 	pub("POST /admin/api/auth/switch-org", s.authSwitchOrg)
-	pub("GET /admin/api/auth/invites/{token}", s.authInvitePreview)
+	// POST with the token in the body: tokens must never appear in URLs
+	// (access logs, proxies, browser history).
+	pub("POST /admin/api/auth/invites/preview", s.authInvitePreview)
 	pub("POST /admin/api/auth/invites/accept", s.authAcceptInvite)
 	pub("POST /admin/api/auth/signup", s.authSignup)
 	pub("POST /admin/api/auth/password", s.authChangePassword)
@@ -85,6 +87,10 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if !s.pwSlot(w, r) {
+		return
+	}
+	defer s.pwFree()
 	u, err := s.store.UserByEmail(r.Context(), email)
 	ok := false
 	if err == nil && !u.Disabled {
@@ -194,7 +200,14 @@ func (s *Server) authSwitchOrg(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) authInvitePreview(w http.ResponseWriter, r *http.Request) {
-	inv, err := s.store.InviteByToken(r.Context(), secure.HashKey(r.PathValue("token")), time.Now())
+	var in struct {
+		Token string `json:"token"`
+	}
+	if err := decode(r, &in); err != nil {
+		bad(w, err)
+		return
+	}
+	inv, err := s.store.InviteByToken(r.Context(), secure.HashKey(in.Token), time.Now())
 	if err != nil {
 		writeError(w, http.StatusNotFound, "invalid_request_error", "invite_invalid", "This invite link is invalid, used or expired.")
 		return
@@ -227,6 +240,10 @@ func (s *Server) authAcceptInvite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "invalid_request_error", "invite_invalid", "This invite link is invalid, used or expired.")
 		return
 	}
+	if !s.pwSlot(w, r) {
+		return
+	}
+	defer s.pwFree()
 	u, err := s.store.UserByEmail(r.Context(), inv.Email)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -253,7 +270,13 @@ func (s *Server) authAcceptInvite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "invalid_request_error", "invite_invalid", "This invite was already used.")
 		return
 	}
-	if err := s.store.AddMember(r.Context(), inv.OrgID, u.ID, inv.Role); err != nil {
+	// Never change an existing membership through an invite: keep the
+	// higher of the current and invited roles (so the last owner can't be
+	// demoted by accepting a lower-role invite).
+	role := inv.Role
+	if cur, err := s.store.MemberRole(r.Context(), inv.OrgID, u.ID); err == nil && store.RoleRank(cur) >= store.RoleRank(inv.Role) {
+		role = cur
+	} else if err := s.store.AddMember(r.Context(), inv.OrgID, u.ID, inv.Role); err != nil {
 		storeErr(w, err)
 		return
 	}
@@ -261,8 +284,8 @@ func (s *Server) authAcceptInvite(w http.ResponseWriter, r *http.Request) {
 		storeErr(w, err)
 		return
 	}
-	s.auditSystem(r, inv.OrgID, u, "invite.accept", 200, map[string]string{"role": inv.Role, "invite_id": inv.ID})
-	writeJSON(w, 200, map[string]any{"user": u, "org_id": inv.OrgID, "role": inv.Role})
+	s.auditSystem(r, inv.OrgID, u, "invite.accept", 200, map[string]string{"role": role, "invited_role": inv.Role, "invite_id": inv.ID})
+	writeJSON(w, 200, map[string]any{"user": u, "org_id": inv.OrgID, "role": role})
 }
 
 // authSignup creates an account and a new organization (only when
@@ -286,6 +309,10 @@ func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "rate_limit_error", "login_locked_out", "Too many attempts; try again later.")
 		return
 	}
+	if !s.pwSlot(w, r) {
+		return
+	}
+	defer s.pwFree()
 	hash, err := secure.HashPassword(in.Password)
 	if err != nil {
 		bad(w, err)
@@ -335,6 +362,10 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 		bad(w, err)
 		return
 	}
+	if !s.pwSlot(w, r) {
+		return
+	}
+	defer s.pwFree()
 	if !secure.VerifyPassword(in.Current, p.User.PasswordHash) {
 		s.lockout.fail("login|" + p.User.Email + "|" + s.clientIP(r))
 		writeError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_credentials", "Current password is wrong.")
@@ -608,3 +639,22 @@ func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
 		"share_env_provider_keys": c.ShareEnvProviderKeys, "pricing_source": s.pricing.Source(),
 	})
 }
+
+// pwSlot bounds concurrent argon2id work (each verify/hash uses ~19 MiB and
+// tens of ms of CPU), so unauthenticated login/signup/invite floods can't
+// exhaust memory or outpace the lockout. It waits briefly, then answers 429.
+func (s *Server) pwSlot(w http.ResponseWriter, r *http.Request) bool {
+	t := time.NewTimer(2 * time.Second)
+	defer t.Stop()
+	select {
+	case s.pwSem <- struct{}{}:
+		return true
+	case <-t.C:
+	case <-r.Context().Done():
+	}
+	w.Header().Set("Retry-After", "1")
+	writeError(w, http.StatusTooManyRequests, "rate_limit_error", "auth_busy", "Too many sign-in attempts in progress; retry shortly.")
+	return false
+}
+
+func (s *Server) pwFree() { <-s.pwSem }

@@ -62,7 +62,7 @@ r("POST", "/admin/api/auth/login", "Auth", "Email + password login; sets the og_
 r("POST", "/admin/api/auth/logout", "Auth", "Ends the session", "public")
 r("GET", "/admin/api/auth/me", "Auth", "Current principal, role and orgs", "public", resp=S("Me"))
 r("POST", "/admin/api/auth/switch-org", "Auth", "Switch the session's active org", "public", obj({"org_id": s}, ["org_id"]), S("Me"))
-r("GET", "/admin/api/auth/invites/{token}", "Auth", "Preview an invite", "public", resp=obj({"email": s, "org": s, "role": s}))
+r("POST", "/admin/api/auth/invites/preview", "Auth", "Preview an invite (token in the body, never in the URL)", "public", obj({"token": s}, ["token"]), obj({"email": s, "org": s, "role": s, "existing_user": b}))
 r("POST", "/admin/api/auth/invites/accept", "Auth", "Accept an invite (single use)", "public", obj({"token": s, "name": s, "password": s}, ["token", "password"]), S("Me"))
 r("POST", "/admin/api/auth/signup", "Auth", "Self-service signup (only with auth.allow_signup)", "public", obj({"email": s, "password": s, "name": s, "org_name": s}), S("Me"), "201")
 r("POST", "/admin/api/auth/password", "Auth", "Change own password", "public", obj({"current_password": s, "new_password": s}))
