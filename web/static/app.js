@@ -3,7 +3,7 @@
 "use strict";
 
 const TOKEN_KEY = "opengate_admin_token";
-const COLORS = ["#6366f1", "#22c55e", "#f59e0b", "#06b6d4", "#ec4899", "#a855f7", "#ef4444", "#84cc16"];
+const COLORS = ["#079A6A", "#60a5fa", "#f59e0b", "#06b6d4", "#ec4899", "#a855f7", "#94a3b8", "#84cc16"];
 const state = { projects: [], keys: [] };
 
 // ---------- helpers ----------
