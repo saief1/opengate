@@ -288,9 +288,9 @@ func (s *Server) backoff(attempt int, retryAfter time.Duration) time.Duration {
 }
 
 // target builds the concrete upstream for a spec (decrypting its key).
-func (s *Server) target(ctx context.Context, t targetSpec) (provider.Target, error) {
+func (s *Server) target(ctx context.Context, org string, t targetSpec) (provider.Target, error) {
 	pc := s.cfg.Providers[t.Provider]
-	apiKey, err := s.apiKeyFor(ctx, t.Provider)
+	apiKey, err := s.apiKeyFor(ctx, org, t.Provider)
 	if err != nil {
 		return provider.Target{}, err
 	}
@@ -302,7 +302,7 @@ func (s *Server) target(ctx context.Context, t targetSpec) (provider.Target, err
 func (s *Server) attemptLoop(ctx context.Context, rs *reqState, targets []targetSpec, do func(t provider.Target) error) error {
 	var lastErr error
 	for _, t := range targets {
-		tgt, err := s.target(ctx, t)
+		tgt, err := s.target(ctx, rs.proj.OrgID, t)
 		if err != nil {
 			lastErr = err
 			continue

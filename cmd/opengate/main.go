@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
@@ -32,6 +33,9 @@ Usage:
   opengate keygen                            print a fresh master key and admin token
   opengate create-key -name NAME [-project P] [-agent A] [-user U] [-config ...]
                                              create a virtual key directly in the database
+  opengate create-user -email E [-name N] [-role owner] [-org ORG_ID] [-config ...]
+                                             create a dashboard account (password from
+                                             OPENGATE_NEW_PASSWORD or stdin)
   opengate pricing                           print the built-in price table (YAML)
   opengate mock-provider [-listen :9090]     run a fake OpenAI/Anthropic/Gemini upstream (dev/demo)
   opengate demo-seed [-days 30] [-config ...] insert synthetic historical traffic (demo only)
@@ -56,6 +60,8 @@ func main() {
 		err = keygen()
 	case "create-key":
 		err = createKey(args)
+	case "create-user":
+		err = createUser(args)
 	case "pricing":
 		_, err = os.Stdout.Write(pricing.DefaultYAML)
 	case "mock-provider":
@@ -216,6 +222,54 @@ func createKey(args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "created key %s (%s) in project %q — store it now, it is not shown again\n", k.ID, k.Name, p.Name)
 	fmt.Println(plain)
+	return nil
+}
+
+// createUser bootstraps a dashboard account (e.g. the first owner).
+func createUser(args []string) error {
+	fs := flag.NewFlagSet("create-user", flag.ExitOnError)
+	email := fs.String("email", "", "email address (login)")
+	name := fs.String("name", "", "display name")
+	role := fs.String("role", store.RoleOwner, "owner|admin|member|viewer")
+	org := fs.String("org", store.DefaultOrgID, "organization id")
+	cfg, err := loadConfig(fs, args)
+	if err != nil {
+		return err
+	}
+	if store.RoleRank(*role) == 0 {
+		return fmt.Errorf("invalid role %q", *role)
+	}
+	pw := os.Getenv("OPENGATE_NEW_PASSWORD")
+	if pw == "" {
+		fmt.Fprint(os.Stderr, "Password (min 10 chars, read from stdin): ")
+		b, err := io.ReadAll(io.LimitReader(os.Stdin, 4096))
+		if err != nil {
+			return err
+		}
+		pw = strings.TrimRight(string(b), "\r\n")
+		fmt.Fprintln(os.Stderr)
+	}
+	hash, err := secure.HashPassword(pw)
+	if err != nil {
+		return err
+	}
+	st, err := store.Open(cfg.Database)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	ctx := context.Background()
+	if _, err := st.GetOrg(ctx, *org); err != nil {
+		return fmt.Errorf("organization %q: %w", *org, err)
+	}
+	u, err := st.CreateUser(ctx, *email, *name, hash)
+	if err != nil {
+		return err
+	}
+	if err := st.AddMember(ctx, *org, u.ID, *role); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "created %s (%s) as %s of %s\n", u.Email, u.ID, *role, *org)
 	return nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"strings"
 )
@@ -61,4 +62,13 @@ func RandomID(prefix string) string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	return prefix + hex.EncodeToString(b)
+}
+
+// RandomToken returns n random bytes, base64url-encoded (session and invite tokens).
+func RandomToken(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
 }

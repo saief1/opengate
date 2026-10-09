@@ -12,12 +12,11 @@ import (
 	"time"
 
 	"github.com/opengate-dev/opengate/internal/budget"
-	"github.com/opengate-dev/opengate/internal/secure"
 	"github.com/opengate-dev/opengate/internal/store"
 )
 
 func (s *Server) registerAdmin(mux *http.ServeMux) {
-	h := func(pattern string, fn http.HandlerFunc) { mux.Handle(pattern, s.adminAuth(fn)) }
+	h := func(pattern string, fn http.HandlerFunc) { mux.Handle(pattern, s.adminAuth(pattern, fn)) }
 	h("GET /admin/api/whoami", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]string{"status": "ok", "version": Version})
 	})
@@ -45,33 +44,10 @@ func (s *Server) registerAdmin(mux *http.ServeMux) {
 	h("GET /admin/api/pricing", s.adminPricing)
 	h("POST /admin/api/pricing/reload", s.adminReloadPricing)
 	s.registerAdminPhase2(h)
-	mux.Handle("/admin/", s.adminAuth(func(w http.ResponseWriter, r *http.Request) {
+	s.registerAuth(mux, h)
+	mux.Handle("/admin/", s.adminAuth("GET /admin/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "invalid_request_error", "not_found", "unknown admin endpoint")
 	}))
-}
-
-func (s *Server) adminAuth(next http.HandlerFunc) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		ip := s.clientIP(r)
-		if locked, d := s.lockout.locked(ip); locked {
-			w.Header().Set("Retry-After", strconv.Itoa(int(d.Seconds())+1))
-			writeError(w, http.StatusTooManyRequests, "rate_limit_error", "admin_locked_out",
-				"Too many failed admin authentications from this address; try again later.")
-			return
-		}
-		tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || s.cfg.AdminToken == "" || !secure.ConstantTimeEqual(strings.TrimSpace(tok), s.cfg.AdminToken) {
-			s.metrics.adminFails.Inc()
-			if s.lockout.fail(ip) {
-				s.log.Warn("admin lockout", "remote_ip", ip, "duration", s.cfg.AdminLockout.Lockout.String())
-			}
-			writeError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_admin_token", "admin token required")
-			return
-		}
-		s.lockout.success(ip)
-		next(w, r)
-	})
 }
 
 func decode(r *http.Request, v any) error {
@@ -108,21 +84,22 @@ func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
 	today := budget.PeriodStart(budget.Daily, now)
 	month := budget.PeriodStart(budget.Monthly, now)
 	since := today.AddDate(0, 0, -(days - 1))
-	sToday, err := s.store.SummarySince(ctx, store.StatsFilter{}, today)
+	f := store.StatsFilter{OrgID: orgID(r)}
+	sToday, err := s.store.SummarySince(ctx, f, today)
 	if err != nil {
 		storeErr(w, err)
 		return
 	}
-	sMonth, _ := s.store.SummarySince(ctx, store.StatsFilter{}, month)
-	sRange, _ := s.store.SummarySince(ctx, store.StatsFilter{}, since)
-	series, _ := s.store.SpendSeries(ctx, store.StatsFilter{}, since, 24*time.Hour)
-	agents, _ := s.store.BreakdownSince(ctx, store.StatsFilter{}, "agent", since, 8)
-	models, _ := s.store.BreakdownSince(ctx, store.StatsFilter{}, "model", since, 8)
-	projects, _ := s.store.BreakdownSince(ctx, store.StatsFilter{}, "project", since, 8)
-	routes, _ := s.store.BreakdownSince(ctx, store.StatsFilter{}, "route", since, 8)
-	customers, _ := s.store.BreakdownSince(ctx, store.StatsFilter{}, "customer", since, 8)
+	sMonth, _ := s.store.SummarySince(ctx, f, month)
+	sRange, _ := s.store.SummarySince(ctx, f, since)
+	series, _ := s.store.SpendSeries(ctx, f, since, 24*time.Hour)
+	agents, _ := s.store.BreakdownSince(ctx, f, "agent", since, 8)
+	models, _ := s.store.BreakdownSince(ctx, f, "model", since, 8)
+	projects, _ := s.store.BreakdownSince(ctx, f, "project", since, 8)
+	routes, _ := s.store.BreakdownSince(ctx, f, "route", since, 8)
+	customers, _ := s.store.BreakdownSince(ctx, f, "customer", since, 8)
 	names := map[string]string{}
-	if ps, err := s.store.ListProjects(ctx); err == nil {
+	if ps, err := s.store.ListProjectsInOrg(ctx, orgID(r)); err == nil {
 		for _, p := range ps {
 			names[p.ID] = p.Name
 		}
@@ -143,7 +120,7 @@ func (s *Server) adminLogs(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
-	logs, total, err := s.store.ListLogs(r.Context(), store.LogFilter{ProjectID: q.Get("project_id"), KeyID: q.Get("key_id"),
+	logs, total, err := s.store.ListLogs(r.Context(), store.LogFilter{OrgID: orgID(r), CustomerID: q.Get("customer_id"), GuardOnly: q.Get("guard") == "1", ProjectID: q.Get("project_id"), KeyID: q.Get("key_id"),
 		Agent: q.Get("agent"), Model: q.Get("model"), ErrorsOnly: q.Get("errors") == "1", Limit: limit, Offset: offset})
 	if err != nil {
 		storeErr(w, err)
@@ -158,11 +135,15 @@ func (s *Server) adminLog(w http.ResponseWriter, r *http.Request) {
 		storeErr(w, err)
 		return
 	}
+	if p, err := s.store.GetProject(r.Context(), l.ProjectID); err == nil && p.OrgID != orgID(r) {
+		storeErr(w, store.ErrNotFound)
+		return
+	}
 	writeJSON(w, 200, l)
 }
 
 func (s *Server) adminProjects(w http.ResponseWriter, r *http.Request) {
-	ps, err := s.store.ListProjects(r.Context())
+	ps, err := s.store.ListProjectsInOrg(r.Context(), orgID(r))
 	if err != nil {
 		storeErr(w, err)
 		return
@@ -199,7 +180,7 @@ func (s *Server) adminCreateProject(w http.ResponseWriter, r *http.Request) {
 		bad(w, err)
 		return
 	}
-	p, err := s.store.CreateProject(r.Context(), in.Name, in.LogBodies)
+	p, err := s.store.CreateProjectInOrg(r.Context(), orgID(r), in.Name, in.LogBodies)
 	if err != nil {
 		bad(w, err)
 		return
@@ -209,7 +190,8 @@ func (s *Server) adminCreateProject(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) adminPatchProject(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		LogBodies *bool `json:"log_bodies"`
+		LogBodies       *bool `json:"log_bodies"`
+		CacheTTLSeconds *int  `json:"cache_ttl_seconds"`
 		policyInput
 	}
 	if err := decode(r, &in); err != nil {
@@ -217,6 +199,9 @@ func (s *Server) adminPatchProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	if _, ok := s.projectInOrg(w, r, id); !ok {
+		return
+	}
 	if in.policyInput.set() {
 		cur, err := s.store.GetProject(r.Context(), id)
 		if err != nil {
@@ -224,6 +209,12 @@ func (s *Server) adminPatchProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.store.SetProjectPolicy(r.Context(), id, in.policyInput.merge(cur.ModelPolicy)); err != nil {
+			bad(w, err)
+			return
+		}
+	}
+	if in.CacheTTLSeconds != nil {
+		if err := s.store.SetProjectCacheTTL(r.Context(), id, *in.CacheTTLSeconds); err != nil {
 			bad(w, err)
 			return
 		}
@@ -245,6 +236,9 @@ func (s *Server) adminPatchProject(w http.ResponseWriter, r *http.Request) {
 func (s *Server) adminKillProject(kill bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
+		if _, ok := s.projectInOrg(w, r, id); !ok {
+			return
+		}
 		if err := s.store.SetProjectKilled(r.Context(), id, kill); err != nil {
 			storeErr(w, err)
 			return
@@ -261,7 +255,7 @@ func (s *Server) adminKillProject(kill bool) http.HandlerFunc {
 }
 
 func (s *Server) adminKeys(w http.ResponseWriter, r *http.Request) {
-	ks, err := s.store.ListKeys(r.Context(), r.URL.Query().Get("project_id"))
+	ks, err := s.orgKeys(r, r.URL.Query().Get("project_id"))
 	if err != nil {
 		storeErr(w, err)
 		return
@@ -304,12 +298,17 @@ func (s *Server) adminCreateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if in.ProjectID == "" {
-		p, err := s.store.EnsureProject(r.Context(), "default")
+		p, err := s.store.ProjectByNameInOrg(r.Context(), orgID(r), "default")
+		if errors.Is(err, store.ErrNotFound) {
+			p, err = s.store.CreateProjectInOrg(r.Context(), orgID(r), "default", false)
+		}
 		if err != nil {
 			storeErr(w, err)
 			return
 		}
 		in.ProjectID = p.ID
+	} else if _, ok := s.projectInOrg(w, r, in.ProjectID); !ok {
+		return
 	}
 	plain, k, err := s.store.CreateKey(r.Context(), in.ProjectID, in.Name, in.Agent, in.User)
 	if err != nil {
@@ -324,6 +323,7 @@ func (s *Server) adminCreateKey(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = s.enforcer.ReloadLimits(r.Context())
 	}
+	s.audit(r, "key.create", k.ID, map[string]string{"name": k.Name, "project_id": k.ProjectID, "agent": k.Agent})
 	writeJSON(w, http.StatusCreated, map[string]any{"key": plain, "virtual_key": k,
 		"note": "Store this key now; OpenGate only keeps its hash and cannot show it again."})
 }
@@ -331,6 +331,10 @@ func (s *Server) adminCreateKey(w http.ResponseWriter, r *http.Request) {
 func (s *Server) adminKillKey(kill bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
+		if !s.keyInOrg(w, r, id) {
+			return
+		}
+		s.audit(r, map[bool]string{true: "key.kill", false: "key.unkill"}[kill], id, nil)
 		if err := s.store.SetKeyKilled(r.Context(), id, kill); err != nil {
 			storeErr(w, err)
 			return
@@ -377,6 +381,9 @@ func (s *Server) adminPatchKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	if !s.keyInOrg(w, r, id) {
+		return
+	}
 	k, err := s.store.GetKey(r.Context(), id)
 	if err != nil {
 		storeErr(w, err)
@@ -392,6 +399,10 @@ func (s *Server) adminPatchKey(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) adminRevokeKey(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if !s.keyInOrg(w, r, id) {
+		return
+	}
+	s.audit(r, "key.revoke", id, nil)
 	if err := s.store.RevokeKey(r.Context(), id); err != nil {
 		storeErr(w, err)
 		return
@@ -406,8 +417,8 @@ func (s *Server) adminLimits(w http.ResponseWriter, r *http.Request) {
 		storeErr(w, err)
 		return
 	}
-	keys, _ := s.store.ListKeys(r.Context(), "")
-	projects, _ := s.store.ListProjects(r.Context())
+	keys, _ := s.orgKeys(r, "")
+	projects, _ := s.store.ListProjectsInOrg(r.Context(), orgID(r))
 	kn, pn := map[string]string{}, map[string]string{}
 	for _, k := range keys {
 		kn[k.ID] = k.Name + " (" + k.Prefix + "…)"
@@ -421,6 +432,9 @@ func (s *Server) adminLimits(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []row{}
 	for _, l := range ls {
+		if !limitVisible(l, kn, pn) {
+			continue
+		}
 		label := l.ScopeID
 		switch l.Scope {
 		case store.ScopeKey:
@@ -447,6 +461,10 @@ func (s *Server) adminPutLimit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	l := store.Limit{Scope: in.Scope, ScopeID: in.ScopeID, DailyUSD: in.DailyUSD, MonthlyUSD: in.MonthlyUSD, TotalUSD: in.TotalUSD, RPM: in.RPM}
+	if !s.scopeInOrg(w, r, in.Scope, in.ScopeID) {
+		return
+	}
+	s.audit(r, "limit.set", in.Scope+":"+in.ScopeID, in.limitInput)
 	if err := s.store.UpsertLimit(r.Context(), l); err != nil {
 		bad(w, err)
 		return
@@ -460,6 +478,9 @@ func (s *Server) adminPutLimit(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) adminDeleteLimit(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	if !s.scopeInOrg(w, r, q.Get("scope"), q.Get("scope_id")) {
+		return
+	}
 	if err := s.store.DeleteLimit(r.Context(), q.Get("scope"), q.Get("scope_id")); err != nil {
 		storeErr(w, err)
 		return
@@ -478,7 +499,7 @@ func (s *Server) adminProviders(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []row{}
 	for name, p := range s.cfg.Providers {
-		out = append(out, row{Name: name, Type: p.Type, BaseURL: p.BaseURL, KeySource: s.keySource(r.Context(), name), Timeout: p.Timeout.String()})
+		out = append(out, row{Name: name, Type: p.Type, BaseURL: p.BaseURL, KeySource: s.keySource(r.Context(), orgID(r), name), Timeout: p.Timeout.String()})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	writeJSON(w, 200, map[string]any{"data": out, "routes": s.cfg.Routes,
@@ -486,7 +507,7 @@ func (s *Server) adminProviders(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminProviderKeys(w http.ResponseWriter, r *http.Request) {
-	ks, err := s.store.ListProviderKeys(r.Context(), r.URL.Query().Get("provider"))
+	ks, err := s.store.ListProviderKeys(r.Context(), orgID(r), r.URL.Query().Get("provider"))
 	if err != nil {
 		storeErr(w, err)
 		return
@@ -511,17 +532,18 @@ func (s *Server) adminAddProviderKey(w http.ResponseWriter, r *http.Request) {
 		bad(w, fmt.Errorf("unknown provider %q", in.Provider))
 		return
 	}
-	pk, err := s.store.AddProviderKey(r.Context(), s.cipher, in.Provider, in.Label, in.Key)
+	pk, err := s.store.AddProviderKey(r.Context(), s.cipher, orgID(r), in.Provider, in.Label, in.Key)
 	if err != nil {
 		bad(w, err)
 		return
 	}
 	s.invalidateKeyCache()
+	s.audit(r, "provider_key.add", pk.ID, map[string]string{"provider": pk.Provider, "label": pk.Label, "hint": pk.Hint})
 	writeJSON(w, http.StatusCreated, pk)
 }
 
 func (s *Server) adminDeleteProviderKey(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.DeleteProviderKey(r.Context(), r.PathValue("id")); err != nil {
+	if err := s.store.DeleteProviderKey(r.Context(), orgID(r), r.PathValue("id")); err != nil {
 		storeErr(w, err)
 		return
 	}
@@ -541,9 +563,80 @@ func (s *Server) adminPricing(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminReloadPricing(w http.ResponseWriter, r *http.Request) {
+	if principalOf(r).Kind != "token" {
+		writeError(w, http.StatusForbidden, "permission_error", "operator_only", "the price table is server-wide; reload it with the admin token")
+		return
+	}
 	if err := s.pricing.Reload(); err != nil {
 		bad(w, err)
 		return
 	}
 	writeJSON(w, 200, map[string]string{"status": "reloaded", "source": s.pricing.Source()})
+}
+
+// orgKeys lists the caller org's virtual keys (optionally one project).
+func (s *Server) orgKeys(r *http.Request, projectID string) ([]*store.VirtualKey, error) {
+	ps, err := s.store.ListProjectsInOrg(r.Context(), orgID(r))
+	if err != nil {
+		return nil, err
+	}
+	in := map[string]bool{}
+	for _, p := range ps {
+		in[p.ID] = true
+	}
+	if projectID != "" && !in[projectID] {
+		return []*store.VirtualKey{}, nil
+	}
+	all, err := s.store.ListKeys(r.Context(), projectID)
+	if err != nil {
+		return nil, err
+	}
+	out := []*store.VirtualKey{}
+	for _, k := range all {
+		if in[k.ProjectID] {
+			out = append(out, k)
+		}
+	}
+	return out, nil
+}
+
+func (s *Server) keyInOrg(w http.ResponseWriter, r *http.Request, id string) bool {
+	o, err := s.store.KeyOrg(r.Context(), id)
+	if err != nil || o != orgID(r) {
+		writeError(w, http.StatusNotFound, "invalid_request_error", "not_found", "key not found")
+		return false
+	}
+	return true
+}
+
+func (s *Server) scopeInOrg(w http.ResponseWriter, r *http.Request, scope, id string) bool {
+	switch scope {
+	case store.ScopeKey:
+		return s.keyInOrg(w, r, id)
+	case store.ScopeProject:
+		_, ok := s.projectInOrg(w, r, id)
+		return ok
+	case store.ScopeAgent:
+		proj, _, _ := strings.Cut(id, "/")
+		_, ok := s.projectInOrg(w, r, proj)
+		return ok
+	}
+	bad(w, fmt.Errorf("scope must be key, agent or project"))
+	return false
+}
+
+func limitVisible(l store.Limit, keys, projects map[string]string) bool {
+	switch l.Scope {
+	case store.ScopeKey:
+		_, ok := keys[l.ScopeID]
+		return ok
+	case store.ScopeProject:
+		_, ok := projects[l.ScopeID]
+		return ok
+	case store.ScopeAgent:
+		proj, _, _ := strings.Cut(l.ScopeID, "/")
+		_, ok := projects[proj]
+		return ok
+	}
+	return false
 }

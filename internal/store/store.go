@@ -418,6 +418,7 @@ func (s *Store) ListLimits(ctx context.Context) ([]Limit, error) {
 // ProviderKey is an encrypted upstream credential.
 type ProviderKey struct {
 	ID         string    `json:"id"`
+	OrgID      string    `json:"org_id"`
 	Provider   string    `json:"provider"`
 	Label      string    `json:"label"`
 	Hint       string    `json:"hint"`
@@ -431,12 +432,15 @@ func ProviderKeyAAD(id, provider string) []byte {
 }
 
 // AddProviderKey encrypts and stores an upstream key.
-func (s *Store) AddProviderKey(ctx context.Context, c *secure.Cipher, provider, label, plaintext string) (*ProviderKey, error) {
+func (s *Store) AddProviderKey(ctx context.Context, c *secure.Cipher, orgID, provider, label, plaintext string) (*ProviderKey, error) {
 	plaintext = strings.TrimSpace(plaintext)
 	if provider == "" || plaintext == "" {
 		return nil, errors.New("provider and key are required")
 	}
-	pk := &ProviderKey{ID: secure.RandomID("pk_"), Provider: provider, Label: strings.TrimSpace(label), CreatedAt: time.Now().UTC()}
+	if orgID == "" {
+		orgID = DefaultOrgID
+	}
+	pk := &ProviderKey{ID: secure.RandomID("pk_"), OrgID: orgID, Provider: provider, Label: strings.TrimSpace(label), CreatedAt: time.Now().UTC()}
 	if len(plaintext) > 8 {
 		pk.Hint = "…" + plaintext[len(plaintext)-4:]
 	}
@@ -445,20 +449,23 @@ func (s *Store) AddProviderKey(ctx context.Context, c *secure.Cipher, provider, 
 		return nil, err
 	}
 	pk.Ciphertext = ct
-	_, err = s.exec(ctx, `INSERT INTO provider_keys(id,provider,label,hint,ciphertext,created_at) VALUES(?,?,?,?,?,?)`,
-		pk.ID, pk.Provider, pk.Label, pk.Hint, pk.Ciphertext, ms(pk.CreatedAt))
+	_, err = s.exec(ctx, `INSERT INTO provider_keys(id,org_id,provider,label,hint,ciphertext,created_at) VALUES(?,?,?,?,?,?,?)`,
+		pk.ID, pk.OrgID, pk.Provider, pk.Label, pk.Hint, pk.Ciphertext, ms(pk.CreatedAt))
 	if err != nil {
 		return nil, err
 	}
 	return pk, nil
 }
 
-// ListProviderKeys lists keys (newest first), optionally filtered by provider.
-func (s *Store) ListProviderKeys(ctx context.Context, provider string) ([]*ProviderKey, error) {
-	q := `SELECT id,provider,label,hint,ciphertext,created_at FROM provider_keys`
-	var args []any
+// ListProviderKeys lists an org's keys (newest first), optionally filtered by provider.
+func (s *Store) ListProviderKeys(ctx context.Context, orgID, provider string) ([]*ProviderKey, error) {
+	if orgID == "" {
+		orgID = DefaultOrgID
+	}
+	q := `SELECT id,org_id,provider,label,hint,ciphertext,created_at FROM provider_keys WHERE org_id=?`
+	args := []any{orgID}
 	if provider != "" {
-		q += ` WHERE provider=?`
+		q += ` AND provider=?`
 		args = append(args, provider)
 	}
 	rows, err := s.query(ctx, q+` ORDER BY created_at DESC, id`, args...)
@@ -470,7 +477,7 @@ func (s *Store) ListProviderKeys(ctx context.Context, provider string) ([]*Provi
 	for rows.Next() {
 		var pk ProviderKey
 		var c int64
-		if err := rows.Scan(&pk.ID, &pk.Provider, &pk.Label, &pk.Hint, &pk.Ciphertext, &c); err != nil {
+		if err := rows.Scan(&pk.ID, &pk.OrgID, &pk.Provider, &pk.Label, &pk.Hint, &pk.Ciphertext, &c); err != nil {
 			return nil, err
 		}
 		pk.CreatedAt = fromMS(c)
@@ -479,9 +486,9 @@ func (s *Store) ListProviderKeys(ctx context.Context, provider string) ([]*Provi
 	return out, rows.Err()
 }
 
-// DeleteProviderKey removes an upstream key.
-func (s *Store) DeleteProviderKey(ctx context.Context, id string) error {
-	return s.execOne(ctx, `DELETE FROM provider_keys WHERE id=?`, id)
+// DeleteProviderKey removes an org's upstream key.
+func (s *Store) DeleteProviderKey(ctx context.Context, orgID, id string) error {
+	return s.execOne(ctx, `DELETE FROM provider_keys WHERE id=? AND org_id=?`, id, orgID)
 }
 
 // ---------- Rate limit buckets ----------

@@ -52,7 +52,7 @@ func TestProviderKeysEncrypted(t *testing.T) {
 	mk, _ := secure.GenerateMasterKey()
 	kb, _ := secure.ParseMasterKey(mk)
 	c, _ := secure.NewCipher(kb)
-	pk, err := s.AddProviderKey(ctx, c, "openai", "prod", "sk-supersecret-1234")
+	pk, err := s.AddProviderKey(ctx, c, "", "openai", "prod", "sk-supersecret-1234")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestProviderKeysEncrypted(t *testing.T) {
 	if strings.Contains(raw.String, "supersecret") {
 		t.Fatal("plaintext provider key in DB")
 	}
-	list, _ := s.ListProviderKeys(ctx, "openai")
+	list, _ := s.ListProviderKeys(ctx, "", "openai")
 	pt, err := c.Decrypt(list[0].Ciphertext, ProviderKeyAAD(list[0].ID, "openai"))
 	if err != nil || string(pt) != "sk-supersecret-1234" || list[0].Hint != "…1234" {
 		t.Fatalf("decrypt: %v %q %q", err, pt, list[0].Hint)

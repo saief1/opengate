@@ -515,17 +515,3 @@ func (s *Server) adminStripeSync(w http.ResponseWriter, r *http.Request) {
 	s.audit(r, "stripe.sync", "", res)
 	writeJSON(w, 200, res)
 }
-
-// orgID is the organization the admin request acts on. Phase 3 replaces the
-// single-tenant default with the session's org.
-func orgID(r *http.Request) string {
-	if v, ok := r.Context().Value(orgCtxKey{}).(string); ok && v != "" {
-		return v
-	}
-	return store.DefaultOrgID
-}
-
-type orgCtxKey struct{}
-
-// audit records an admin action (no-op until the audit log lands).
-func (s *Server) audit(r *http.Request, action, target string, detail any) {}

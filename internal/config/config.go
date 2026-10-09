@@ -48,6 +48,11 @@ type Config struct {
 	Guardrails        GuardrailsConfig          `yaml:"guardrails"`
 	Billing           BillingConfig             `yaml:"billing"`
 	Cache             CacheConfig               `yaml:"cache"`
+	Auth              AuthConfig                `yaml:"auth"`
+	// ShareEnvProviderKeys lets every organization use provider keys from
+	// environment variables. Default false: env keys serve only the default
+	// org; other orgs must bring their own (stored encrypted).
+	ShareEnvProviderKeys bool `yaml:"share_env_provider_keys"`
 
 	// Secrets are only ever read from the environment, never from YAML.
 	AdminToken   string `yaml:"-"`
@@ -107,6 +112,21 @@ type StripeConfig struct {
 	// Lag excludes the most recent window so in-flight requests are
 	// logged before their window is reported (default 15m).
 	Lag time.Duration `yaml:"lag"`
+}
+
+// AuthConfig controls dashboard user accounts.
+type AuthConfig struct {
+	SessionTTL time.Duration `yaml:"session_ttl"` // idle timeout, default 12h
+	// SessionMaxAge caps a session's total lifetime (default 7 days).
+	SessionMaxAge time.Duration `yaml:"session_max_age"`
+	// AllowSignup lets anyone create an account plus a new organization
+	// (hosted/cloud mode). Default false: users join via invites.
+	AllowSignup bool `yaml:"allow_signup"`
+	// SecureCookies forces the Secure cookie flag (it is always set when the
+	// request arrived over TLS or, with trust_proxy_headers, X-Forwarded-Proto=https).
+	SecureCookies bool `yaml:"secure_cookies"`
+	// InviteTTL is how long invite links stay valid (default 7 days).
+	InviteTTL time.Duration `yaml:"invite_ttl"`
 }
 
 // CacheConfig tunes the opt-in exact-match response cache.
@@ -464,6 +484,15 @@ func (c *Config) normalizePhase2() error {
 	}
 	if st.Lag <= 0 {
 		st.Lag = 15 * time.Minute
+	}
+	if c.Auth.SessionTTL <= 0 {
+		c.Auth.SessionTTL = 12 * time.Hour
+	}
+	if c.Auth.SessionMaxAge <= 0 {
+		c.Auth.SessionMaxAge = 7 * 24 * time.Hour
+	}
+	if c.Auth.InviteTTL <= 0 {
+		c.Auth.InviteTTL = 7 * 24 * time.Hour
 	}
 	if c.Cache.MaxTTL <= 0 {
 		c.Cache.MaxTTL = 24 * time.Hour

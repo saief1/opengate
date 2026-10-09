@@ -99,3 +99,28 @@ func TestParseMasterKey(t *testing.T) {
 		}
 	}
 }
+
+func TestPasswordHashing(t *testing.T) {
+	h, err := HashPassword("correct horse battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(h, "$argon2id$v=19$m=19456,t=2,p=1$") {
+		t.Fatalf("format: %s", h)
+	}
+	if !VerifyPassword("correct horse battery", h) || VerifyPassword("correct horse batterz", h) {
+		t.Fatal("verify")
+	}
+	h2, _ := HashPassword("correct horse battery")
+	if h == h2 {
+		t.Fatal("salt must differ")
+	}
+	if _, err := HashPassword("short"); err == nil {
+		t.Fatal("min length")
+	}
+	for _, bad := range []string{"", "$argon2id$", "$argon2i$v=19$m=1,t=1,p=1$AA$AA", strings.Replace(h, "t=2", "t=999", 1)} {
+		if VerifyPassword("x", bad) {
+			t.Fatalf("accepted %q", bad)
+		}
+	}
+}

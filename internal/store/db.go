@@ -311,6 +311,67 @@ var migrations = []migration{
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_cache_expires ON response_cache(expires_at)`,
 	}},
+	{4, "organizations, users, sessions, invites, audit log, per-org provider keys", []string{
+		`CREATE TABLE IF NOT EXISTS orgs (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  created_at BIGINT NOT NULL
+)`,
+		`INSERT INTO orgs(id,name,created_at) VALUES('org_default','Default',0) ON CONFLICT DO NOTHING`,
+		`CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL DEFAULT '',
+  password_hash TEXT NOT NULL,
+  disabled INTEGER NOT NULL DEFAULT 0,
+  created_at BIGINT NOT NULL,
+  last_login_at BIGINT NOT NULL DEFAULT 0
+)`,
+		`CREATE TABLE IF NOT EXISTS memberships (
+  org_id TEXT NOT NULL REFERENCES orgs(id),
+  user_id TEXT NOT NULL REFERENCES users(id),
+  role TEXT NOT NULL,
+  created_at BIGINT NOT NULL,
+  PRIMARY KEY (org_id, user_id)
+)`,
+		`CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  org_id TEXT NOT NULL,
+  created_at BIGINT NOT NULL,
+  expires_at BIGINT NOT NULL,
+  last_seen_at BIGINT NOT NULL,
+  ip TEXT NOT NULL DEFAULT '',
+  user_agent TEXT NOT NULL DEFAULT ''
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`,
+		`CREATE TABLE IF NOT EXISTS invites (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES orgs(id),
+  email TEXT NOT NULL,
+  role TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at BIGINT NOT NULL,
+  expires_at BIGINT NOT NULL,
+  accepted_at BIGINT NOT NULL DEFAULT 0
+)`,
+		`CREATE TABLE IF NOT EXISTS audit_log (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL,
+  ts BIGINT NOT NULL,
+  actor_type TEXT NOT NULL,
+  actor_id TEXT NOT NULL DEFAULT '',
+  actor_email TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL,
+  target TEXT NOT NULL DEFAULT '',
+  status INTEGER NOT NULL DEFAULT 0,
+  ip TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT ''
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_org_ts ON audit_log(org_id, ts)`,
+		`ALTER TABLE provider_keys ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default'`,
+	}},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

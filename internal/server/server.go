@@ -141,6 +141,9 @@ func (s *Server) Run(ctx context.Context) {
 			if err := s.store.PruneRateBuckets(ctx, time.Now().Add(-10*time.Minute)); err != nil {
 				s.log.Warn("prune rate buckets", "err", err)
 			}
+			if err := s.store.PruneSessions(ctx, time.Now()); err != nil {
+				s.log.Warn("prune sessions", "err", err)
+			}
 			if _, err := s.store.PurgeCache(ctx, ""); err != nil {
 				s.log.Warn("purge response cache", "err", err)
 			}
@@ -294,14 +297,15 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 
 // apiKeyFor returns the API key for a provider: newest stored (encrypted)
 // key first, then the provider's api_key_env variable.
-func (s *Server) apiKeyFor(ctx context.Context, name string) (string, error) {
+func (s *Server) apiKeyFor(ctx context.Context, org, name string) (string, error) {
+	ck := org + "\x00" + name
 	s.keyMu.Lock()
-	if k, ok := s.keyCache[name]; ok {
+	if k, ok := s.keyCache[ck]; ok {
 		s.keyMu.Unlock()
 		return k, nil
 	}
 	s.keyMu.Unlock()
-	keys, err := s.store.ListProviderKeys(ctx, name)
+	keys, err := s.store.ListProviderKeys(ctx, org, name)
 	if err != nil {
 		return "", err
 	}
@@ -312,13 +316,18 @@ func (s *Server) apiKeyFor(ctx context.Context, name string) (string, error) {
 			return "", fmt.Errorf("decrypt provider key %s: %w", keys[0].ID, err)
 		}
 		key = string(pt)
-	} else if env := s.cfg.Providers[name].APIKeyEnv; env != "" {
+	} else if env := s.cfg.Providers[name].APIKeyEnv; env != "" && s.envKeysFor(org) {
 		key = os.Getenv(env)
 	}
 	s.keyMu.Lock()
-	s.keyCache[name] = key
+	s.keyCache[ck] = key
 	s.keyMu.Unlock()
 	return key, nil
+}
+
+// envKeysFor reports whether an org may use provider keys from the environment.
+func (s *Server) envKeysFor(org string) bool {
+	return org == store.DefaultOrgID || s.cfg.ShareEnvProviderKeys
 }
 
 func (s *Server) invalidateKeyCache() {
@@ -328,12 +337,12 @@ func (s *Server) invalidateKeyCache() {
 }
 
 // keySource reports where a provider's key comes from (for the dashboard).
-func (s *Server) keySource(ctx context.Context, name string) string {
-	keys, _ := s.store.ListProviderKeys(ctx, name)
+func (s *Server) keySource(ctx context.Context, org, name string) string {
+	keys, _ := s.store.ListProviderKeys(ctx, org, name)
 	if len(keys) > 0 {
 		return "stored"
 	}
-	if env := s.cfg.Providers[name].APIKeyEnv; env != "" && os.Getenv(env) != "" {
+	if env := s.cfg.Providers[name].APIKeyEnv; env != "" && os.Getenv(env) != "" && s.envKeysFor(org) {
 		return "env:" + env
 	}
 	return "none"
