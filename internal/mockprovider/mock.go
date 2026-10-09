@@ -1,0 +1,375 @@
+// Package mockprovider is a fake upstream that speaks the OpenAI, Anthropic
+// and Gemini wire formats. It powers the integration tests and the local demo
+// (`opengate mock-provider`) so OpenGate can be exercised without real keys.
+//
+// Behaviour is selected by the model name:
+//
+//	*fail*       always HTTP 500
+//	*ratelimit*  always HTTP 429
+//	*badkey*     always HTTP 401
+//	*flaky*      every other request fails with 503
+//	*long*       streams 200 chunks, 20ms apart (for kill-switch tests)
+//	*slow*       adds 300ms before responding
+package mockprovider
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"math/rand/v2"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+)
+
+// Options tune the mock.
+type Options struct {
+	// Jitter adds a random 0..Jitter delay to each response (demo realism).
+	Jitter time.Duration
+	// ChunkDelay is the delay between streamed chunks (default 5ms).
+	ChunkDelay time.Duration
+}
+
+// Mock is the fake provider.
+type Mock struct {
+	opts  Options
+	mu    sync.Mutex
+	hits  map[string]int // by "provider:model"
+	flaky map[string]int
+}
+
+// New returns a mock provider handler.
+func New(o Options) *Mock {
+	if o.ChunkDelay == 0 {
+		o.ChunkDelay = 5 * time.Millisecond
+	}
+	return &Mock{opts: o, hits: map[string]int{}, flaky: map[string]int{}}
+}
+
+// Hits returns how many requests reached provider:model.
+func (m *Mock) Hits(provider, model string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.hits[provider+":"+model]
+}
+
+type chatMsg struct {
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}
+
+func textOf(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	_ = json.Unmarshal(raw, &parts)
+	var b strings.Builder
+	for _, p := range parts {
+		b.WriteString(p.Text)
+	}
+	return b.String()
+}
+
+func (m *Mock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 10<<20))
+	switch {
+	case strings.HasSuffix(path, "/chat/completions"):
+		m.openai(w, r, body)
+	case strings.HasSuffix(path, "/v1/messages"):
+		m.anthropic(w, r, body)
+	case strings.Contains(path, ":generateContent") || strings.Contains(path, ":streamGenerateContent"):
+		m.gemini(w, r, body)
+	default:
+		http.Error(w, `{"error":{"message":"mock: unknown endpoint"}}`, http.StatusNotFound)
+	}
+}
+
+// gate applies failure behaviours; it returns false if a response was written.
+func (m *Mock) gate(w http.ResponseWriter, provider, model string, authed bool) bool {
+	m.mu.Lock()
+	m.hits[provider+":"+model]++
+	m.mu.Unlock()
+	if m.opts.Jitter > 0 {
+		time.Sleep(time.Duration(rand.Int64N(int64(m.opts.Jitter))))
+	}
+	if strings.Contains(model, "slow") {
+		time.Sleep(300 * time.Millisecond)
+	}
+	fail := func(code int, msg string) bool {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		fmt.Fprintf(w, `{"error":{"message":%q,"type":"mock_error"}}`, msg)
+		return false
+	}
+	switch {
+	case !authed || strings.Contains(model, "badkey"):
+		return fail(401, "mock: invalid API key")
+	case strings.Contains(model, "fail"):
+		return fail(500, "mock: internal error")
+	case strings.Contains(model, "ratelimit"):
+		w.Header().Set("Retry-After", "0")
+		return fail(429, "mock: rate limited")
+	case strings.Contains(model, "flaky"):
+		m.mu.Lock()
+		m.flaky[provider+model]++
+		n := m.flaky[provider+model]
+		m.mu.Unlock()
+		if n%2 == 1 {
+			return fail(503, "mock: temporarily overloaded")
+		}
+	}
+	return true
+}
+
+func reply(provider, model, prompt string) []string {
+	p := strings.Fields(prompt)
+	if len(p) > 12 {
+		p = p[len(p)-12:]
+	}
+	words := []string{"Hello", "from", "the", "OpenGate", "mock", provider, "model", model + "."}
+	if strings.Contains(model, "long") {
+		for i := 0; i < 200; i++ {
+			words = append(words, fmt.Sprintf("token%d", i))
+		}
+	} else {
+		words = append(words, "You", "said:")
+		words = append(words, p...)
+	}
+	return words
+}
+
+func promptTokens(s string) int {
+	n := len(s)/4 + 8
+	return n
+}
+
+func (m *Mock) sse(w http.ResponseWriter) (func(event string, v any), func()) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(200)
+	fl, _ := w.(http.Flusher)
+	send := func(event string, v any) {
+		b, _ := json.Marshal(v)
+		if event != "" {
+			fmt.Fprintf(w, "event: %s\n", event)
+		}
+		fmt.Fprintf(w, "data: %s\n\n", b)
+		if fl != nil {
+			fl.Flush()
+		}
+	}
+	return send, func() {
+		if fl != nil {
+			fl.Flush()
+		}
+	}
+}
+
+func (m *Mock) delay(model string) {
+	d := m.opts.ChunkDelay
+	if strings.Contains(model, "long") {
+		d = 20 * time.Millisecond
+	}
+	time.Sleep(d)
+}
+
+// ---- OpenAI ----
+
+func (m *Mock) openai(w http.ResponseWriter, r *http.Request, body []byte) {
+	var req struct {
+		Model         string    `json:"model"`
+		Messages      []chatMsg `json:"messages"`
+		Stream        bool      `json:"stream"`
+		StreamOptions *struct {
+			IncludeUsage bool `json:"include_usage"`
+		} `json:"stream_options"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, `{"error":{"message":"bad json"}}`, 400)
+		return
+	}
+	prov := "openai"
+	if strings.Contains(r.URL.Path, "openrouter") {
+		prov = "openrouter"
+	}
+	if !m.gate(w, prov, req.Model, strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")) {
+		return
+	}
+	var all strings.Builder
+	last := ""
+	for _, msg := range req.Messages {
+		t := textOf(msg.Content)
+		all.WriteString(t)
+		if msg.Role == "user" {
+			last = t
+		}
+	}
+	words := reply(prov, req.Model, last)
+	pt, ct := promptTokens(all.String()), len(words)
+	id := fmt.Sprintf("chatcmpl-mock%d", rand.IntN(1e9))
+	if !req.Stream {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": id, "object": "chat.completion", "created": time.Now().Unix(), "model": req.Model,
+			"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": strings.Join(words, " ")}, "finish_reason": "stop"}},
+			"usage":   map[string]int{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct},
+		})
+		return
+	}
+	send, _ := m.sse(w)
+	chunk := func(delta map[string]any, finish any) map[string]any {
+		return map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": req.Model,
+			"choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finish}}}
+	}
+	send("", chunk(map[string]any{"role": "assistant", "content": ""}, nil))
+	for i, wd := range words {
+		if r.Context().Err() != nil {
+			return
+		}
+		if i > 0 {
+			wd = " " + wd
+		}
+		send("", chunk(map[string]any{"content": wd}, nil))
+		m.delay(req.Model)
+	}
+	send("", chunk(map[string]any{}, "stop"))
+	if req.StreamOptions != nil && req.StreamOptions.IncludeUsage {
+		send("", map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": req.Model, "choices": []any{},
+			"usage": map[string]int{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}})
+	}
+	fmt.Fprint(w, "data: [DONE]\n\n")
+}
+
+// ---- Anthropic ----
+
+func (m *Mock) anthropic(w http.ResponseWriter, r *http.Request, body []byte) {
+	var req struct {
+		Model     string    `json:"model"`
+		System    string    `json:"system"`
+		Messages  []chatMsg `json:"messages"`
+		MaxTokens int       `json:"max_tokens"`
+		Stream    bool      `json:"stream"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.MaxTokens == 0 || r.Header.Get("anthropic-version") == "" {
+		w.WriteHeader(400)
+		fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"mock: bad anthropic request (max_tokens and anthropic-version are required)"}}`)
+		return
+	}
+	if !m.gate(w, "anthropic", req.Model, r.Header.Get("x-api-key") != "") {
+		return
+	}
+	all := req.System
+	last := ""
+	for _, msg := range req.Messages {
+		var blocks []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		_ = json.Unmarshal(msg.Content, &blocks)
+		for _, b := range blocks {
+			all += b.Text
+			if msg.Role == "user" && b.Type == "text" {
+				last = b.Text
+			}
+		}
+	}
+	words := reply("anthropic", req.Model, last)
+	pt, ct := promptTokens(all), len(words)
+	id := fmt.Sprintf("msg_mock%d", rand.IntN(1e9))
+	if !req.Stream {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": id, "type": "message", "role": "assistant", "model": req.Model, "stop_reason": "end_turn",
+			"content": []any{map[string]any{"type": "text", "text": strings.Join(words, " ")}},
+			"usage":   map[string]int{"input_tokens": pt, "output_tokens": ct},
+		})
+		return
+	}
+	send, _ := m.sse(w)
+	send("message_start", map[string]any{"type": "message_start", "message": map[string]any{"id": id, "type": "message", "role": "assistant", "model": req.Model, "content": []any{}, "usage": map[string]int{"input_tokens": pt, "output_tokens": 1}}})
+	send("content_block_start", map[string]any{"type": "content_block_start", "index": 0, "content_block": map[string]any{"type": "text", "text": ""}})
+	send("ping", map[string]any{"type": "ping"})
+	for i, wd := range words {
+		if r.Context().Err() != nil {
+			return
+		}
+		if i > 0 {
+			wd = " " + wd
+		}
+		send("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "text_delta", "text": wd}})
+		m.delay(req.Model)
+	}
+	send("content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+	send("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": "end_turn"}, "usage": map[string]int{"output_tokens": ct}})
+	send("message_stop", map[string]any{"type": "message_stop"})
+}
+
+// ---- Gemini ----
+
+func (m *Mock) gemini(w http.ResponseWriter, r *http.Request, body []byte) {
+	path := r.URL.Path
+	model := path[strings.LastIndex(path, "/")+1:]
+	model, _, _ = strings.Cut(model, ":")
+	stream := strings.Contains(path, ":streamGenerateContent")
+	var req struct {
+		Contents []struct {
+			Role  string `json:"role"`
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"contents"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || len(req.Contents) == 0 {
+		w.WriteHeader(400)
+		fmt.Fprint(w, `{"error":{"code":400,"message":"mock: contents required"}}`)
+		return
+	}
+	if !m.gate(w, "gemini", model, r.Header.Get("x-goog-api-key") != "") {
+		return
+	}
+	all, last := "", ""
+	for _, c := range req.Contents {
+		for _, p := range c.Parts {
+			all += p.Text
+			if c.Role == "user" {
+				last = p.Text
+			}
+		}
+	}
+	words := reply("gemini", model, last)
+	pt, ct := promptTokens(all), len(words)
+	usage := map[string]int{"promptTokenCount": pt, "candidatesTokenCount": ct, "totalTokenCount": pt + ct}
+	cand := func(text, finish string) map[string]any {
+		c := map[string]any{"content": map[string]any{"role": "model", "parts": []any{map[string]string{"text": text}}}}
+		if finish != "" {
+			c["finishReason"] = finish
+		}
+		return c
+	}
+	if !stream {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"candidates": []any{cand(strings.Join(words, " "), "STOP")}, "usageMetadata": usage, "modelVersion": model, "responseId": "mockresp"})
+		return
+	}
+	send, _ := m.sse(w)
+	for i, wd := range words {
+		if r.Context().Err() != nil {
+			return
+		}
+		if i > 0 {
+			wd = " " + wd
+		}
+		ev := map[string]any{"candidates": []any{cand(wd, "")}, "modelVersion": model}
+		if i == len(words)-1 {
+			ev = map[string]any{"candidates": []any{cand(wd, "STOP")}, "usageMetadata": usage, "modelVersion": model}
+		}
+		send("", ev)
+		m.delay(model)
+	}
+}

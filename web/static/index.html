@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenGate</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="login" class="login hidden">
+    <form id="login-form" class="card login-card">
+      <div class="brand big"><span class="logo"></span>OpenGate</div>
+      <p class="muted">Enter the admin token (<code>OPENGATE_ADMIN_TOKEN</code>). It is kept in this tab's session storage only.</p>
+      <input id="token" type="password" placeholder="Admin token" autocomplete="current-password" required>
+      <button class="btn primary" type="submit">Sign in</button>
+      <p id="login-error" class="error"></p>
+    </form>
+  </div>
+  <div id="app" class="app hidden">
+    <aside class="sidebar">
+      <div class="brand"><span class="logo"></span>OpenGate</div>
+      <nav id="nav">
+        <a href="#overview" data-page="overview">Overview</a>
+        <a href="#logs" data-page="logs">Request logs</a>
+        <a href="#keys" data-page="keys">Virtual keys</a>
+        <a href="#projects" data-page="projects">Projects</a>
+        <a href="#budgets" data-page="budgets">Budgets</a>
+        <a href="#providers" data-page="providers">Providers</a>
+      </nav>
+      <div class="sidebar-foot">
+        <span id="version" class="muted"></span>
+        <button id="logout" class="btn ghost small">Sign out</button>
+      </div>
+    </aside>
+    <main>
+      <header class="topbar">
+        <h1 id="page-title">Overview</h1>
+        <div id="page-actions"></div>
+      </header>
+      <section id="page"></section>
+    </main>
+  </div>
+  <div id="modal" class="modal hidden"><div class="modal-body card" id="modal-body"></div></div>
+  <div id="toast" class="toast hidden"></div>
+  <script src="app.js"></script>
+</body>
+</html>
