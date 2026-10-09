@@ -1,3 +1,11 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/opengate-logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/brand/opengate-logo-light.svg">
+    <img alt="OpenGate" src="assets/brand/opengate-logo-light.svg" height="48">
+  </picture>
+</p>
+
 # OpenGate
 
 **The auditable, secure-by-default AI gateway.** One static Go binary that sits between your agents and
@@ -227,7 +235,8 @@ internal/budget/       spend limits, token-bucket RPM limiter, threshold webhook
 internal/provider/     adapters: OpenAI(-compatible), OpenRouter, Anthropic, Gemini (+ SSE parsing)
 internal/server/       /v1 API, failover/retry loop, kill switch registry, admin API, dashboard serving
 internal/mockprovider/ fake upstream used by tests and the demo
-web/static/            dashboard (vanilla JS/CSS, embedded)
+web/static/            dashboard (vanilla JS/CSS, favicons, brand lockup; embedded)
+assets/                brand SVGs for README, GitHub avatar + social preview
 integration/           end-to-end tests against the mock provider
 ```
 

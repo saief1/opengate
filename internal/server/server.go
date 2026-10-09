@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"mime"
 	"net/http"
 	"os"
 	"strings"
@@ -22,6 +23,13 @@ import (
 	"github.com/opengate-dev/opengate/internal/secure"
 	"github.com/opengate-dev/opengate/internal/store"
 )
+
+func init() {
+	// Not in Go's built-in MIME table, and distroless images ship no /etc/mime.types.
+	_ = mime.AddExtensionType(".ico", "image/x-icon")
+	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
+	_ = mime.AddExtensionType(".svg", "image/svg+xml")
+}
 
 // Version is set at build time via -ldflags.
 var Version = "dev"
@@ -103,6 +111,11 @@ func (s *Server) Handler() http.Handler {
 	if s.webFS != nil && !s.cfg.DisableDashboard {
 		files := http.FileServerFS(s.webFS)
 		mux.Handle("GET /ui/", http.StripPrefix("/ui/", uiHeaders(files)))
+		// Browsers request /favicon.ico at the site root regardless of <link> tags.
+		mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "public, max-age=86400")
+			http.ServeFileFS(w, r, s.webFS, "favicon.ico")
+		})
 		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/ui/", http.StatusFound)
 		})

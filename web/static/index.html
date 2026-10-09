@@ -4,14 +4,17 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OpenGate</title>
-  <!-- Favicon: replace favicon.svg (or point this link at the brand icon) when logo files arrive. -->
-  <link id="favicon" rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="favicon.ico" sizes="16x16 32x32 48x48">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="manifest" href="site.webmanifest">
+  <meta name="theme-color" content="#0B0D12">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <div id="login" class="login hidden">
     <form id="login-form" class="card login-card">
-      <div class="brand big"><span class="logo-slot" data-slot="logo" title="Logo placeholder">OG</span>OpenGate</div>
+      <div class="brand big"><img class="lockup" src="brand/opengate-lockup-dark.svg" alt="OpenGate" width="243" height="44"></div>
       <p class="muted">Enter the admin token (<code>OPENGATE_ADMIN_TOKEN</code>). It is kept in this tab's session storage only.</p>
       <input id="token" type="password" placeholder="Admin token" autocomplete="current-password" required>
       <button class="btn primary" type="submit">Sign in</button>
@@ -20,7 +23,7 @@
   </div>
   <div id="app" class="app hidden">
     <aside class="sidebar">
-      <div class="brand"><span class="logo-slot" data-slot="logo" title="Logo placeholder">OG</span>OpenGate</div>
+      <div class="brand"><img class="lockup" src="brand/opengate-lockup-dark.svg" alt="OpenGate" width="176" height="32"></div>
       <nav id="nav">
         <a href="#overview" data-page="overview">Overview</a>
         <a href="#logs" data-page="logs">Request logs</a>

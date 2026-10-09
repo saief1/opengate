@@ -217,10 +217,17 @@ func TestAuthAndDashboard(t *testing.T) {
 	if r.StatusCode != 200 || !strings.Contains(string(b), "OpenGate") || !strings.Contains(r.Header.Get("Content-Security-Policy"), "default-src 'self'") {
 		t.Fatalf("dashboard: %d %s", r.StatusCode, r.Header)
 	}
-	for _, asset := range []string{"app.js", "style.css", "favicon.svg"} {
-		if r, _ := http.Get(e.gw.URL + "/ui/" + asset); r.StatusCode != 200 {
-			t.Fatalf("asset %s: %d", asset, r.StatusCode)
+	for asset, ctype := range map[string]string{
+		"/ui/app.js": "text/javascript", "/ui/style.css": "text/css", "/ui/favicon.ico": "image/x-icon", "/favicon.ico": "image/x-icon",
+		"/ui/favicon.svg": "image/svg+xml", "/ui/favicon-transparent.svg": "image/svg+xml", "/ui/apple-touch-icon.png": "image/png",
+		"/ui/android-chrome-192.png": "image/png", "/ui/android-chrome-512.png": "image/png",
+		"/ui/site.webmanifest": "application/manifest+json", "/ui/brand/opengate-lockup-dark.svg": "image/svg+xml",
+	} {
+		r, err := http.Get(e.gw.URL + asset)
+		if err != nil || r.StatusCode != 200 || !strings.HasPrefix(r.Header.Get("Content-Type"), ctype) {
+			t.Fatalf("asset %s: %v %d %q (want %s)", asset, err, r.StatusCode, r.Header.Get("Content-Type"), ctype)
 		}
+		r.Body.Close()
 	}
 	key, _, _ := e.newKey("models", "", nil)
 	req, _ := http.NewRequest("GET", e.gw.URL+"/v1/models", nil)
@@ -513,10 +520,19 @@ func TestKillSwitch(t *testing.T) {
 	if !strings.Contains(string(rest), "kill switch") || strings.Contains(string(rest), "[DONE]") || time.Since(start) > 2*time.Second {
 		t.Fatalf("stream not aborted cleanly: %q", rest)
 	}
-	time.Sleep(50 * time.Millisecond)
-	logs, _, _ := e.st.ListLogs(context.Background(), store.LogFilter{KeyID: keyID, Limit: 1})
-	if logs[0].ErrorCode != "killed_mid_stream" || logs[0].CompletionTokens == 0 {
-		t.Fatalf("killed stream log: %+v", logs[0])
+	// The stream's log row is written when its handler returns; poll for it
+	// rather than relying on ordering by start timestamp.
+	var killedLog *store.RequestLog
+	for deadline := time.Now().Add(3 * time.Second); killedLog == nil && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		logs, _, _ := e.st.ListLogs(context.Background(), store.LogFilter{KeyID: keyID})
+		for _, l := range logs {
+			if l.Stream {
+				killedLog = l
+			}
+		}
+	}
+	if killedLog == nil || killedLog.ErrorCode != "killed_mid_stream" || killedLog.CompletionTokens == 0 {
+		t.Fatalf("killed stream log: %+v", killedLog)
 	}
 	// Kill-switch webhooks were sent.
 	found := false
