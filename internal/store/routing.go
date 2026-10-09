@@ -306,10 +306,12 @@ WHERE project_id=? AND customer_id=? AND status<400 AND ts>? AND ts<=?`, project
 	return b.Float64, t.Int64, err
 }
 
-// AdvanceStripeSync moves a customer's cursor after a successful report.
-func (s *Store) AdvanceStripeSync(ctx context.Context, projectID, customerID string, to time.Time, remainder float64, value int64) error {
-	return s.execOne(ctx, `UPDATE stripe_sync SET synced_to=?, remainder=?, last_value=?, last_error='', updated_at=? WHERE project_id=? AND customer_id=?`,
-		ms(to), remainder, value, ms(time.Now()), projectID, customerID)
+// AdvanceStripeSync moves a customer's cursor from -> to after a successful
+// report. It is a compare-and-swap: ErrNotFound means the cursor is no
+// longer at from (another writer advanced it), and nothing changed.
+func (s *Store) AdvanceStripeSync(ctx context.Context, projectID, customerID string, from, to time.Time, remainder float64, value int64) error {
+	return s.execOne(ctx, `UPDATE stripe_sync SET synced_to=?, remainder=?, last_value=?, last_error='', updated_at=? WHERE project_id=? AND customer_id=? AND synced_to=?`,
+		ms(to), remainder, value, ms(time.Now()), projectID, customerID, ms(from))
 }
 
 // FailStripeSync records a sync error without moving the cursor.

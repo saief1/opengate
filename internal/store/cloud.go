@@ -19,16 +19,39 @@ type OrgBilling struct {
 	CurrentPeriodEnd     time.Time `json:"current_period_end"`
 	CancelAtPeriodEnd    bool      `json:"cancel_at_period_end"`
 	PastDueSince         time.Time `json:"past_due_since"`
-	UpdatedAt            time.Time `json:"updated_at"`
+	// CheckoutSessionID/CheckoutPlan remember the org's open Checkout Session
+	// so a second "Upgrade" click reuses (or expires) it instead of opening a
+	// parallel one that could create a duplicate subscription.
+	CheckoutSessionID string `json:"-"`
+	CheckoutPlan      string `json:"-"`
+	// RiskStatus is set by dispute / fraud events: dispute_open (flag only),
+	// dispute_lost or fraud_warning (paid plan suspended until the operator
+	// clears it). RiskDetail names the Stripe object.
+	RiskStatus string    `json:"risk_status,omitempty"`
+	RiskDetail string    `json:"risk_detail,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
-const billingCols = `org_id,plan,status,stripe_customer_id,stripe_subscription_id,current_period_end,cancel_at_period_end,past_due_since,updated_at`
+// Risk statuses.
+const (
+	RiskDisputeOpen  = "dispute_open"
+	RiskDisputeLost  = "dispute_lost"
+	RiskFraudWarning = "fraud_warning"
+)
+
+// Suspended reports whether a risk flag suspends the paid plan.
+func (b *OrgBilling) Suspended() bool {
+	return b.RiskStatus == RiskDisputeLost || b.RiskStatus == RiskFraudWarning
+}
+
+const billingCols = `org_id,plan,status,stripe_customer_id,stripe_subscription_id,current_period_end,cancel_at_period_end,past_due_since,checkout_session_id,checkout_plan,risk_status,risk_detail,updated_at`
 
 func scanBilling(sc interface{ Scan(...any) error }) (*OrgBilling, error) {
 	var b OrgBilling
 	var cpe, pds, upd int64
 	var cancel int
-	if err := sc.Scan(&b.OrgID, &b.Plan, &b.Status, &b.StripeCustomerID, &b.StripeSubscriptionID, &cpe, &cancel, &pds, &upd); err != nil {
+	if err := sc.Scan(&b.OrgID, &b.Plan, &b.Status, &b.StripeCustomerID, &b.StripeSubscriptionID, &cpe, &cancel, &pds,
+		&b.CheckoutSessionID, &b.CheckoutPlan, &b.RiskStatus, &b.RiskDetail, &upd); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -64,11 +87,14 @@ func (s *Store) PutOrgBilling(ctx context.Context, b *OrgBilling) error {
 	if b.CancelAtPeriodEnd {
 		cancel = 1
 	}
-	_, err := s.exec(ctx, `INSERT INTO org_billing(`+billingCols+`) VALUES(?,?,?,?,?,?,?,?,?)
+	_, err := s.exec(ctx, `INSERT INTO org_billing(`+billingCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(org_id) DO UPDATE SET plan=excluded.plan, status=excluded.status, stripe_customer_id=excluded.stripe_customer_id,
  stripe_subscription_id=excluded.stripe_subscription_id, current_period_end=excluded.current_period_end,
- cancel_at_period_end=excluded.cancel_at_period_end, past_due_since=excluded.past_due_since, updated_at=excluded.updated_at`,
-		b.OrgID, b.Plan, b.Status, b.StripeCustomerID, b.StripeSubscriptionID, ms0(b.CurrentPeriodEnd), cancel, ms0(b.PastDueSince), ms(b.UpdatedAt))
+ cancel_at_period_end=excluded.cancel_at_period_end, past_due_since=excluded.past_due_since,
+ checkout_session_id=excluded.checkout_session_id, checkout_plan=excluded.checkout_plan,
+ risk_status=excluded.risk_status, risk_detail=excluded.risk_detail, updated_at=excluded.updated_at`,
+		b.OrgID, b.Plan, b.Status, b.StripeCustomerID, b.StripeSubscriptionID, ms0(b.CurrentPeriodEnd), cancel, ms0(b.PastDueSince),
+		b.CheckoutSessionID, b.CheckoutPlan, b.RiskStatus, b.RiskDetail, ms(b.UpdatedAt))
 	if err != nil && strings.Contains(strings.ToLower(err.Error()), "unique") {
 		return ErrConflict
 	}
@@ -112,19 +138,87 @@ func (s *Store) OrgUsage(ctx context.Context, orgID, period string) (int64, erro
 	return n, err
 }
 
+// Event claim results.
+const (
+	EventClaimed = iota // this delivery should process the event
+	EventDone           // already processed: acknowledge as a duplicate
+	EventBusy           // another delivery is processing it right now
+)
+
+// ClaimStripeEvent atomically claims a webhook event for processing. The
+// unique insert means two concurrent deliveries of the same event can't both
+// process it; a claim left behind by a crashed process is taken over after
+// staleAfter.
+func (s *Store) ClaimStripeEvent(ctx context.Context, id, typ string, staleAfter time.Duration) (int, error) {
+	now := time.Now()
+	res, err := s.exec(ctx, `INSERT INTO stripe_events(id,type,received_at,state) VALUES(?,?,?,'processing') ON CONFLICT DO NOTHING`, id, typ, ms(now))
+	if err != nil {
+		return 0, err
+	}
+	if n, _ := res.RowsAffected(); n == 1 {
+		return EventClaimed, nil
+	}
+	res, err = s.exec(ctx, `UPDATE stripe_events SET received_at=? WHERE id=? AND state='processing' AND received_at<?`, ms(now), id, ms(now.Add(-staleAfter)))
+	if err != nil {
+		return 0, err
+	}
+	if n, _ := res.RowsAffected(); n == 1 {
+		return EventClaimed, nil
+	}
+	var state string
+	if err := s.queryRow(ctx, `SELECT state FROM stripe_events WHERE id=?`, id).Scan(&state); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return EventBusy, nil // released between our statements; let Stripe retry
+		}
+		return 0, err
+	}
+	if state == "done" {
+		return EventDone, nil
+	}
+	return EventBusy, nil
+}
+
+// FinishStripeEvent marks a claimed event processed.
+func (s *Store) FinishStripeEvent(ctx context.Context, id string) error {
+	_, err := s.exec(ctx, `UPDATE stripe_events SET state='done' WHERE id=?`, id)
+	return err
+}
+
+// ReleaseStripeEvent drops a claim after a processing failure so Stripe's
+// retry can process the event again.
+func (s *Store) ReleaseStripeEvent(ctx context.Context, id string) error {
+	_, err := s.exec(ctx, `DELETE FROM stripe_events WHERE id=? AND state='processing'`, id)
+	return err
+}
+
 // StripeEventSeen reports whether a webhook event was already processed.
 func (s *Store) StripeEventSeen(ctx context.Context, id string) (bool, error) {
 	var x string
-	err := s.queryRow(ctx, `SELECT id FROM stripe_events WHERE id=?`, id).Scan(&x)
+	err := s.queryRow(ctx, `SELECT id FROM stripe_events WHERE id=? AND state='done'`, id).Scan(&x)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	return err == nil, err
 }
 
-// MarkStripeEvent records a processed webhook event (idempotency).
-func (s *Store) MarkStripeEvent(ctx context.Context, id, typ string) error {
-	_, err := s.exec(ctx, `INSERT INTO stripe_events(id,type,received_at) VALUES(?,?,?) ON CONFLICT DO NOTHING`, id, typ, ms(time.Now()))
+// AcquireLease takes or renews the named single-writer lease for holder.
+// It succeeds when the lease is free, expired, or already held by holder,
+// so only one process (across replicas sharing the database) runs the job.
+func (s *Store) AcquireLease(ctx context.Context, name, holder string, ttl time.Duration) (bool, error) {
+	now := time.Now()
+	res, err := s.exec(ctx, `INSERT INTO job_leases(name,holder,expires_at) VALUES(?,?,?)
+ON CONFLICT(name) DO UPDATE SET holder=excluded.holder, expires_at=excluded.expires_at
+WHERE job_leases.expires_at < ? OR job_leases.holder = excluded.holder`, name, holder, ms(now.Add(ttl)), ms(now))
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// ReleaseLease gives the lease up if holder still owns it.
+func (s *Store) ReleaseLease(ctx context.Context, name, holder string) error {
+	_, err := s.exec(ctx, `DELETE FROM job_leases WHERE name=? AND holder=?`, name, holder)
 	return err
 }
 

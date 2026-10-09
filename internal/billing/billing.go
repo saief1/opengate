@@ -5,10 +5,12 @@ package billing
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -149,6 +151,16 @@ func safeCell(s string) string {
 // ---------- Stripe ----------
 
 // Stripe syncs usage to Stripe Billing meter events.
+//
+// Correctness rules (no double billing):
+//   - Usage is reported per fixed, epoch-aligned window (cfg.Window). The
+//     window that follows a cursor is a pure function of the cursor, and the
+//     meter event identifier is a hash of (project, customer, from, to), so a
+//     retry after a lost response, or another replica, sends the *same*
+//     identifier and Stripe de-duplicates it.
+//   - The cursor only advances by compare-and-swap from the value the window
+//     was computed from.
+//   - A database lease makes one process (across replicas) the writer.
 type Stripe struct {
 	cfg    config.StripeConfig
 	apiKey string
@@ -156,27 +168,42 @@ type Stripe struct {
 	client *http.Client
 	log    *slog.Logger
 	now    func() time.Time
+	holder string     // lease holder id of this process
 	mu     sync.Mutex // one sync at a time per process
 }
+
+// syncLease is the job_leases row guarding the meter sync.
+const syncLease = "stripe_meter_sync"
+
+// maxWindowsPerRun bounds catch-up work per customer per run.
+const maxWindowsPerRun = 2000
 
 // NewStripe creates a syncer. client may be nil.
 func NewStripe(cfg config.StripeConfig, apiKey string, st *store.Store, client *http.Client, log *slog.Logger) *Stripe {
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &Stripe{cfg: cfg, apiKey: apiKey, st: st, client: client, log: log, now: time.Now}
+	if cfg.Window <= 0 {
+		cfg.Window = time.Hour
+	}
+	if cfg.APIVersion == "" {
+		cfg.APIVersion = config.StripeAPIVersion
+	}
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return &Stripe{cfg: cfg, apiKey: apiKey, st: st, client: client, log: log, now: time.Now, holder: "sync_" + hex.EncodeToString(b)}
 }
 
 // SyncResult summarizes one run.
 type SyncResult struct {
 	Customers int      `json:"customers"`
 	Events    int      `json:"events"`
+	Skipped   bool     `json:"skipped,omitempty"` // another replica holds the lease
 	Errors    []string `json:"errors,omitempty"`
 }
 
-// Sync reports usage for every mapped customer from its cursor up to now-lag.
-// Each event carries a deterministic identifier, so a retried window is
-// de-duplicated by Stripe. Fractional cents are carried forward.
+// Sync reports usage for every mapped customer, one closed window at a time,
+// up to now-lag. Fractional cents are carried forward.
 func (s *Stripe) Sync(ctx context.Context) SyncResult { return s.sync(ctx, nil) }
 
 // SyncProjects syncs only customers of the given projects (one org's).
@@ -188,54 +215,94 @@ func (s *Stripe) SyncProjects(ctx context.Context, projectIDs []string) SyncResu
 	return s.sync(ctx, allow)
 }
 
+// windowAfter returns the end of the fixed window that contains from
+// (windows are [k*w, (k+1)*w) in Unix milliseconds; a cursor on a boundary
+// starts the next window).
+func windowAfter(from time.Time, w time.Duration) time.Time {
+	wm := w.Milliseconds()
+	f := from.UnixMilli()
+	end := (f/wm + 1) * wm
+	if f < 0 && f%wm != 0 {
+		end -= wm
+	}
+	return time.UnixMilli(end).UTC()
+}
+
 func (s *Stripe) sync(ctx context.Context, only map[string]bool) SyncResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var res SyncResult
+	ttl := 10 * time.Minute
+	if ok, err := s.st.AcquireLease(ctx, syncLease, s.holder, ttl); err != nil {
+		res.Errors = append(res.Errors, "lease: "+err.Error())
+		return res
+	} else if !ok {
+		res.Skipped = true
+		return res
+	}
+	defer func() { _ = s.st.ReleaseLease(context.WithoutCancel(ctx), syncLease, s.holder) }()
 	all, err := s.st.StripeSyncStates(ctx)
 	if err != nil {
 		res.Errors = append(res.Errors, err.Error())
 		return res
 	}
-	states := all[:0:0]
+	cutoff := s.now().Add(-s.cfg.Lag)
+	renew := time.Now().Add(ttl / 2)
 	for _, st := range all {
-		if only == nil || only[st.ProjectID] {
-			states = append(states, st)
-		}
-	}
-	end := s.now().Add(-s.cfg.Lag).Truncate(time.Millisecond)
-	for _, st := range states {
-		if !end.After(st.SyncedTo) {
+		if only != nil && !only[st.ProjectID] {
 			continue
+		}
+		if windowAfter(st.SyncedTo, s.cfg.Window).After(cutoff) {
+			continue // the current window hasn't closed yet
 		}
 		res.Customers++
-		billed, tokens, err := s.st.UsageWindow(ctx, st.ProjectID, st.CustomerID, st.SyncedTo, end)
-		if err != nil {
-			res.Errors = append(res.Errors, err.Error())
-			continue
-		}
-		units := float64(tokens)
-		if s.cfg.Unit == "cents" {
-			units = billed*100 + st.Remainder
-		}
-		value := int64(math.Floor(units + 1e-9))
-		rem := units - float64(value)
-		if rem < 0 {
-			rem = 0
-		}
-		if value > 0 {
-			id := eventID(st.ProjectID, st.CustomerID, st.SyncedTo, end)
-			if err := s.send(ctx, st.StripeCustomerID, value, id, end); err != nil {
-				msg := fmt.Sprintf("%s/%s: %v", st.ProjectID, st.CustomerID, err)
-				res.Errors = append(res.Errors, msg)
-				_ = s.st.FailStripeSync(ctx, st.ProjectID, st.CustomerID, err.Error())
-				s.log.Warn("stripe meter event failed", "project_id", st.ProjectID, "customer_id", st.CustomerID, "err", err)
-				continue
+		from, rem := st.SyncedTo, st.Remainder
+		for i := 0; i < maxWindowsPerRun; i++ {
+			end := windowAfter(from, s.cfg.Window)
+			if end.After(cutoff) {
+				break
 			}
-			res.Events++
-		}
-		if err := s.st.AdvanceStripeSync(ctx, st.ProjectID, st.CustomerID, end, rem, value); err != nil {
-			res.Errors = append(res.Errors, err.Error())
+			if time.Now().After(renew) { // long catch-up: keep the lease
+				if ok, err := s.st.AcquireLease(ctx, syncLease, s.holder, ttl); err != nil || !ok {
+					res.Errors = append(res.Errors, "lease lost")
+					return res
+				}
+				renew = time.Now().Add(ttl / 2)
+			}
+			billed, tokens, err := s.st.UsageWindow(ctx, st.ProjectID, st.CustomerID, from, end)
+			if err != nil {
+				res.Errors = append(res.Errors, err.Error())
+				break
+			}
+			units := float64(tokens)
+			if s.cfg.Unit == "cents" {
+				units = billed*100 + rem
+			}
+			value := int64(math.Floor(units + 1e-9))
+			nrem := units - float64(value)
+			if nrem < 0 || s.cfg.Unit != "cents" {
+				nrem = 0
+			}
+			if value > 0 {
+				id := eventID(st.ProjectID, st.CustomerID, from, end)
+				// The event is timestamped inside its window (Stripe buckets
+				// usage by timestamp and rejects future timestamps).
+				if err := s.send(ctx, st.StripeCustomerID, value, id, end.Add(-time.Second)); err != nil {
+					msg := fmt.Sprintf("%s/%s: %v", st.ProjectID, st.CustomerID, err)
+					res.Errors = append(res.Errors, msg)
+					_ = s.st.FailStripeSync(ctx, st.ProjectID, st.CustomerID, err.Error())
+					s.log.Warn("stripe meter event failed", "project_id", st.ProjectID, "customer_id", st.CustomerID, "window_end", end, "err", err)
+					break // retry this exact window (same identifier) next run
+				}
+				res.Events++
+			}
+			if err := s.st.AdvanceStripeSync(ctx, st.ProjectID, st.CustomerID, from, end, nrem, value); err != nil {
+				if !errors.Is(err, store.ErrNotFound) {
+					res.Errors = append(res.Errors, err.Error())
+				}
+				break // cursor moved under us: another writer; stop for this customer
+			}
+			from, rem = end, nrem
 		}
 	}
 	return res
@@ -260,6 +327,7 @@ func (s *Stripe) send(ctx context.Context, stripeCustomer string, value int64, i
 	req.Header.Set("Authorization", "Bearer "+s.apiKey)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Idempotency-Key", identifier)
+	req.Header.Set("Stripe-Version", s.cfg.APIVersion)
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return err
@@ -277,7 +345,9 @@ func (s *Stripe) send(ctx context.Context, stripeCustomer string, value int64, i
 	}
 	_ = json.Unmarshal(body, &e)
 	// A duplicate identifier means Stripe already has this window.
-	if resp.StatusCode == http.StatusBadRequest && strings.Contains(strings.ToLower(e.Error.Message), "identifier") && strings.Contains(strings.ToLower(e.Error.Message), "already") {
+	msg := strings.ToLower(e.Error.Message)
+	if resp.StatusCode == http.StatusBadRequest && (e.Error.Code == "resource_already_exists" ||
+		(strings.Contains(msg, "identifier") && (strings.Contains(msg, "already") || strings.Contains(msg, "duplicate")))) {
 		return nil
 	}
 	return fmt.Errorf("stripe HTTP %d: %s", resp.StatusCode, e.Error.Message)

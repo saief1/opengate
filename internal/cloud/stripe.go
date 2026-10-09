@@ -23,13 +23,23 @@ import (
 type Stripe struct {
 	BaseURL string
 	APIKey  string
-	Client  *http.Client
+	// APIVersion is sent as Stripe-Version on every request so responses
+	// don't change shape when the account's default version moves.
+	APIVersion string
+	Client     *http.Client
+}
+
+// Livemode reports whether the API key is a live-mode key. Anything that
+// isn't sk_live_/rk_live_ (test keys, mock keys) is treated as test mode.
+func (s *Stripe) Livemode() bool {
+	return strings.HasPrefix(s.APIKey, "sk_live_") || strings.HasPrefix(s.APIKey, "rk_live_")
 }
 
 // APIError is a non-2xx Stripe answer.
 type APIError struct {
 	Status  int
 	Type    string
+	Code    string
 	Message string
 }
 
@@ -45,6 +55,9 @@ func (s *Stripe) do(ctx context.Context, method, path string, form url.Values, i
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+s.APIKey)
+	if s.APIVersion != "" {
+		req.Header.Set("Stripe-Version", s.APIVersion)
+	}
 	if form != nil {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
@@ -68,11 +81,12 @@ func (s *Stripe) do(ctx context.Context, method, path string, form url.Values, i
 		var e struct {
 			Error struct {
 				Type    string `json:"type"`
+				Code    string `json:"code"`
 				Message string `json:"message"`
 			} `json:"error"`
 		}
 		_ = json.Unmarshal(data, &e)
-		return &APIError{Status: resp.StatusCode, Type: e.Error.Type, Message: e.Error.Message}
+		return &APIError{Status: resp.StatusCode, Type: e.Error.Type, Code: e.Error.Code, Message: e.Error.Message}
 	}
 	return json.Unmarshal(data, out)
 }
@@ -120,8 +134,12 @@ func (s *Stripe) CreateCustomer(ctx context.Context, orgID, orgName, email strin
 // CheckoutParams describes a subscription Checkout Session.
 type CheckoutParams struct {
 	OrgID, CustomerID, PriceID, SuccessURL, CancelURL string
-	TrialDays                                         int
-	AllowPromotionCodes, AutomaticTax                 bool
+	// IdempotencyKey makes a retried or double-submitted create return the
+	// same session instead of opening a second one.
+	IdempotencyKey                    string
+	TrialDays                         int
+	TrialWithoutCard                  bool
+	AllowPromotionCodes, AutomaticTax bool
 }
 
 // Session is a Checkout or portal session (only what we use).
@@ -132,7 +150,8 @@ type Session struct {
 	Subscription      ID                `json:"subscription"`
 	ClientReferenceID string            `json:"client_reference_id"`
 	Mode              string            `json:"mode"`
-	Status            string            `json:"status"`
+	Status            string            `json:"status"` // open | complete | expired
+	PaymentStatus     string            `json:"payment_status"`
 	Metadata          map[string]string `json:"metadata"`
 }
 
@@ -150,6 +169,10 @@ func (s *Stripe) CreateCheckoutSession(ctx context.Context, p CheckoutParams) (*
 	f.Set("subscription_data[metadata][org_id]", p.OrgID)
 	if p.TrialDays > 0 {
 		f.Set("subscription_data[trial_period_days]", strconv.Itoa(p.TrialDays))
+		if p.TrialWithoutCard {
+			f.Set("payment_method_collection", "if_required")
+			f.Set("subscription_data[trial_settings][end_behavior][missing_payment_method]", "cancel")
+		}
 	}
 	if p.AllowPromotionCodes {
 		f.Set("allow_promotion_codes", "true")
@@ -161,14 +184,112 @@ func (s *Stripe) CreateCheckoutSession(ctx context.Context, p CheckoutParams) (*
 		f.Set("tax_id_collection[enabled]", "true")
 	}
 	var out Session
-	return &out, s.do(ctx, "POST", "/v1/checkout/sessions", f, "", &out)
+	return &out, s.do(ctx, "POST", "/v1/checkout/sessions", f, p.IdempotencyKey, &out)
+}
+
+func validID(id, prefix string) error {
+	if !strings.HasPrefix(id, prefix) || strings.ContainsAny(id, "/?#%") {
+		return fmt.Errorf("invalid Stripe id %q", id)
+	}
+	return nil
+}
+
+// GetCheckoutSession retrieves a Checkout Session.
+func (s *Stripe) GetCheckoutSession(ctx context.Context, id string) (*Session, error) {
+	if err := validID(id, "cs_"); err != nil {
+		return nil, err
+	}
+	var out Session
+	return &out, s.do(ctx, "GET", "/v1/checkout/sessions/"+id, nil, "", &out)
+}
+
+// ExpireCheckoutSession expires an open Checkout Session so it can no longer
+// be paid.
+func (s *Stripe) ExpireCheckoutSession(ctx context.Context, id string) error {
+	if err := validID(id, "cs_"); err != nil {
+		return err
+	}
+	var out Session
+	return s.do(ctx, "POST", "/v1/checkout/sessions/"+id+"/expire", url.Values{}, "", &out)
+}
+
+// ListSubscriptions returns the customer's subscriptions in any status
+// (most recent first, up to 20).
+func (s *Stripe) ListSubscriptions(ctx context.Context, customerID string) ([]*Subscription, error) {
+	if err := validID(customerID, "cus_"); err != nil {
+		return nil, err
+	}
+	q := url.Values{"customer": {customerID}, "status": {"all"}, "limit": {"20"}}
+	var out struct {
+		Data []*Subscription `json:"data"`
+	}
+	return out.Data, s.do(ctx, "GET", "/v1/subscriptions?"+q.Encode(), nil, "", &out)
+}
+
+// CancelSubscription cancels a subscription immediately.
+func (s *Stripe) CancelSubscription(ctx context.Context, id, idemKey string) (*Subscription, error) {
+	if err := validID(id, "sub_"); err != nil {
+		return nil, err
+	}
+	var out Subscription
+	return &out, s.do(ctx, "DELETE", "/v1/subscriptions/"+id, nil, idemKey, &out)
+}
+
+// Charge is the subset of a charge OpenGate needs for risk events.
+type Charge struct {
+	ID             string `json:"id"`
+	Customer       ID     `json:"customer"`
+	Amount         int64  `json:"amount"`
+	AmountRefunded int64  `json:"amount_refunded"`
+	Currency       string `json:"currency"`
+	Refunded       bool   `json:"refunded"`
+}
+
+// GetCharge retrieves a charge.
+func (s *Stripe) GetCharge(ctx context.Context, id string) (*Charge, error) {
+	if err := validID(id, "ch_"); err != nil && validID(id, "py_") != nil {
+		return nil, err
+	}
+	var out Charge
+	return &out, s.do(ctx, "GET", "/v1/charges/"+id, nil, "", &out)
+}
+
+// Dispute is the subset of a dispute OpenGate needs.
+type Dispute struct {
+	ID       string `json:"id"`
+	Charge   ID     `json:"charge"`
+	Amount   int64  `json:"amount"`
+	Currency string `json:"currency"`
+	Reason   string `json:"reason"`
+	Status   string `json:"status"` // warning_needs_response | needs_response | under_review | won | lost | ...
+}
+
+// GetDispute retrieves a dispute (the source of truth for its status).
+func (s *Stripe) GetDispute(ctx context.Context, id string) (*Dispute, error) {
+	if err := validID(id, "dp_"); err != nil && validID(id, "du_") != nil {
+		return nil, err
+	}
+	var out Dispute
+	return &out, s.do(ctx, "GET", "/v1/disputes/"+id, nil, "", &out)
+}
+
+// EarlyFraudWarning is a Radar early fraud warning.
+type EarlyFraudWarning struct {
+	ID         string `json:"id"`
+	Charge     ID     `json:"charge"`
+	FraudType  string `json:"fraud_type"`
+	Actionable bool   `json:"actionable"`
 }
 
 // CreatePortalSession opens the Stripe Customer Portal for a customer.
-func (s *Stripe) CreatePortalSession(ctx context.Context, customerID, returnURL string) (*Session, error) {
+// configuration (bpc_...) is optional.
+func (s *Stripe) CreatePortalSession(ctx context.Context, customerID, returnURL, configuration string) (*Session, error) {
 	f := url.Values{}
 	f.Set("customer", customerID)
 	f.Set("return_url", returnURL)
+	if configuration != "" {
+		f.Set("configuration", configuration)
+	}
 	var out Session
 	return &out, s.do(ctx, "POST", "/v1/billing_portal/sessions", f, "", &out)
 }

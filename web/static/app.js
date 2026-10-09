@@ -638,7 +638,9 @@ Object.assign(pages, {
       meter("Requests this month", u.requests, eff.max_requests_month, "resets on the 1st (UTC) · " + u.period),
       meter("Team members", u.members, eff.max_members, u.pending_invites ? `+${u.pending_invites} pending invite(s)` : "members and pending invites count"),
       meter("Projects", u.projects, eff.max_projects, eff.log_retention_days ? `request logs kept ${eff.log_retention_days} days` : "")));
-    if (b.status === "past_due") root.append(el("div", { class: "banner warn" }, "Your last payment failed. Stripe will retry automatically; update your card in the billing portal to keep your " + eff.name + " limits."));
+    if (b.suspended) root.append(el("div", { class: "banner warn" }, "Paid features are paused because of a " + (b.risk_status === "fraud_warning" ? "card fraud warning" : "lost payment dispute") + " on this account. Contact support to restore your plan."));
+    else if (b.status === "trialing" && !b.cancel_at_period_end) root.append(el("div", { class: "banner" }, `Your ${eff.name} trial runs until ${date(b.current_period_end)}. Add a card in the billing portal to keep it afterwards.`));
+    else if (b.status === "past_due") root.append(el("div", { class: "banner warn" }, "Your last payment failed. Stripe will retry automatically; update your card in the billing portal to keep your " + eff.name + " limits."));
     else if (b.cancel_at_period_end) root.append(el("div", { class: "banner" }, `Your subscription is set to end on ${date(b.current_period_end)}. After that, the ${b.plans.find((p) => p.price_usd === 0 && !p.contact_sales)?.name || "free"} plan's limits apply.`));
     else if (eff.max_requests_month > 0 && u.requests >= eff.max_requests_month) root.append(el("div", { class: "banner warn" }, "You've used all included requests for this month; gateway calls answer 429 until you upgrade or the month resets."));
     const planCard = (p) => {

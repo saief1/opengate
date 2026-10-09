@@ -2497,6 +2497,10 @@ paths:
                     type: "string"
                   can_manage:
                     type: "boolean"
+                  risk_status:
+                    type: "string"
+                  suspended:
+                    type: "boolean"
         "400":
           description: "Error"
           content:
@@ -2525,7 +2529,7 @@ paths:
     post:
       tags:
         - "Cloud"
-      summary: "Start Stripe Checkout for a plan (owner)"
+      summary: "Start (or reuse the open) Stripe Checkout for a plan (owner); 409 if a subscription exists"
       operationId: "post_billing_checkout"
       x-min-role: "owner"
       requestBody:
@@ -2551,6 +2555,8 @@ paths:
                     type: "string"
                   id:
                     type: "string"
+                  reused:
+                    type: "boolean"
         "400":
           description: "Error"
           content:
@@ -2634,6 +2640,40 @@ paths:
                   type: "string"
               required:
                 - "plan"
+      responses:
+        "200":
+          description: "OK"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/api/billing/risk/clear:
+    post:
+      tags:
+        - "Cloud"
+      summary: "Lift a dispute / fraud-warning suspension after review (operator admin token only)"
+      operationId: "post_billing_risk_clear"
+      x-min-role: "admin token"
       responses:
         "200":
           description: "OK"

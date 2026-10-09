@@ -1,8 +1,11 @@
 package cloud
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -67,23 +70,39 @@ func TestApplySubscriptionAndEffective(t *testing.T) {
 	if Effective(cc, b, now).ID != "free" {
 		t.Fatal("default plan")
 	}
-	if !ApplySubscription(cc, b, sub("sub_1", "cus_a", "active", "price_team"), now) || Effective(cc, b, now).ID != "team" {
+	if ApplySubscription(cc, b, sub("sub_1", "cus_a", "active", "price_team"), now) != Applied || Effective(cc, b, now).ID != "team" {
 		t.Fatalf("active team: %+v", b)
 	}
 	if b.CurrentPeriodEnd.Unix() != 1900000000 {
 		t.Fatalf("period end from items: %v", b.CurrentPeriodEnd)
 	}
 	// Unknown price and a foreign customer are ignored.
-	if ApplySubscription(cc, b, sub("sub_x", "cus_a", "active", "price_unknown"), now) {
+	if ApplySubscription(cc, b, sub("sub_x", "cus_a", "active", "price_unknown"), now) != Ignored {
 		t.Fatal("unknown price applied")
 	}
-	if ApplySubscription(cc, b, sub("sub_1", "cus_evil", "canceled", "price_team"), now) || b.Plan != "team" {
+	if ApplySubscription(cc, b, sub("sub_1", "cus_evil", "canceled", "price_team"), now) != Ignored || b.Plan != "team" {
 		t.Fatal("other customer's subscription applied")
 	}
 	// An older, canceled subscription must not downgrade the current one.
-	if ApplySubscription(cc, b, sub("sub_old", "cus_a", "canceled", "price_team"), now) || b.Plan != "team" {
+	if ApplySubscription(cc, b, sub("sub_old", "cus_a", "canceled", "price_team"), now) != Ignored || b.Plan != "team" {
 		t.Fatal("stale subscription applied")
 	}
+	// A1: a second live subscription is a duplicate and leaves the current one alone.
+	for _, st := range []string{"active", "trialing", "past_due", "incomplete"} {
+		if o := ApplySubscription(cc, b, sub("sub_dup", "cus_a", st, "price_team"), now); o != Duplicate || b.StripeSubscriptionID != "sub_1" || b.Status != "active" {
+			t.Fatalf("duplicate %s: %v %+v", st, o, b)
+		}
+	}
+	// Risk suspension: a lost dispute / fraud warning pauses the paid plan.
+	b.RiskStatus = store.RiskDisputeOpen
+	if Effective(cc, b, now).ID != "team" {
+		t.Fatal("an open dispute alone must not suspend")
+	}
+	b.RiskStatus = store.RiskFraudWarning
+	if Effective(cc, b, now).ID != "free" {
+		t.Fatal("fraud warning must suspend the paid plan")
+	}
+	b.RiskStatus = ""
 	// past_due keeps the plan during the grace period only.
 	ApplySubscription(cc, b, sub("sub_1", "cus_a", "past_due", "price_team"), now)
 	if Effective(cc, b, now).ID != "team" || Effective(cc, b, now.Add(8*24*time.Hour)).ID != "free" {
@@ -132,5 +151,47 @@ func TestIDAndInvoiceShapes(t *testing.T) {
 	_ = json.Unmarshal([]byte(`{"current_period_end":1700000000,"items":{"data":[]}}`), &top)
 	if top.PeriodEnd().Unix() != 1700000000 || top.PriceID() != "" {
 		t.Fatal("top-level period end")
+	}
+}
+
+func TestReplacementAfterCancel(t *testing.T) {
+	cc, now := cloudCfg(), time.Now()
+	b := &store.OrgBilling{OrgID: "org_a", Plan: "team", Status: "canceled", StripeCustomerID: "cus_a", StripeSubscriptionID: "sub_old"}
+	// The recorded subscription is no longer in force: a new live one replaces it.
+	if o := ApplySubscription(cc, b, sub("sub_new", "cus_a", "active", "price_team"), now); o != Applied || b.StripeSubscriptionID != "sub_new" {
+		t.Fatalf("replacement: %v %+v", o, b)
+	}
+}
+
+func TestLivemodeFromKey(t *testing.T) {
+	for k, want := range map[string]bool{"sk_live_x": true, "rk_live_x": true, "sk_test_x": false, "rk_test_x": false, "mock": false} {
+		if (&Stripe{APIKey: k}).Livemode() != want {
+			t.Fatalf("%s", k)
+		}
+	}
+}
+
+func TestClientPinsAPIVersion(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Get("Stripe-Version"))
+		_, _ = w.Write([]byte(`{"id":"sub_1","status":"active","data":[]}`))
+	}))
+	defer srv.Close()
+	c := &Stripe{BaseURL: srv.URL, APIKey: "sk_test_x", APIVersion: config.StripeAPIVersion, Client: srv.Client()}
+	_, _ = c.GetSubscription(context.Background(), "sub_1")
+	_, _ = c.ListSubscriptions(context.Background(), "cus_1")
+	_ = c.ExpireCheckoutSession(context.Background(), "cs_1")
+	if len(got) != 3 {
+		t.Fatalf("calls %d", len(got))
+	}
+	for _, v := range got {
+		if v != "2026-09-30.endive" {
+			t.Fatalf("Stripe-Version %q", v)
+		}
+	}
+	// Path injection through ids is refused before any request.
+	if err := c.ExpireCheckoutSession(context.Background(), "cs_1/../../v1/customers"); err == nil {
+		t.Fatal("bad id accepted")
 	}
 }

@@ -116,12 +116,26 @@ type CloudPlan struct {
 // SelfServe reports whether the plan can be bought through Stripe Checkout.
 func (p CloudPlan) SelfServe() bool { return p.StripePriceID != "" && !p.ContactSales }
 
+// StripeAPIVersion is the Stripe API version OpenGate is built and tested
+// against. Every request pins it with the Stripe-Version header; webhook
+// endpoints should be created with the same version.
+const StripeAPIVersion = "2026-09-30.endive"
+
 // CloudStripeConfig configures Stripe subscriptions for cloud mode.
 type CloudStripeConfig struct {
-	BaseURL             string `yaml:"base_url"` // default https://api.stripe.com
+	BaseURL string `yaml:"base_url"` // default https://api.stripe.com
+	// APIVersion overrides the pinned Stripe-Version (default StripeAPIVersion).
+	APIVersion string `yaml:"api_version"`
+	// PortalConfiguration is the bpc_... Customer Portal configuration to
+	// use (default: the account's default configuration).
+	PortalConfiguration string `yaml:"portal_configuration"`
 	TrialDays           int    `yaml:"trial_days"`
-	AllowPromotionCodes bool   `yaml:"allow_promotion_codes"`
-	AutomaticTax        bool   `yaml:"automatic_tax"` // requires Stripe Tax to be set up
+	// TrialWithoutCard lets a trial start without a payment method
+	// (payment_method_collection=if_required); a trial that ends with no
+	// card on file is canceled and the org returns to the default plan.
+	TrialWithoutCard    bool `yaml:"trial_without_card"`
+	AllowPromotionCodes bool `yaml:"allow_promotion_codes"`
+	AutomaticTax        bool `yaml:"automatic_tax"` // requires Stripe Tax to be set up
 }
 
 // DefaultCloudPlans is the draft plan catalog (prices are placeholders until
@@ -198,6 +212,12 @@ type StripeConfig struct {
 	// Lag excludes the most recent window so in-flight requests are
 	// logged before their window is reported (default 15m).
 	Lag time.Duration `yaml:"lag"`
+	// Window is the fixed reporting bucket (default 1h). Usage is reported
+	// per closed, epoch-aligned window with an identifier derived from the
+	// window, so retries and concurrent replicas can't double-report.
+	Window time.Duration `yaml:"window"`
+	// APIVersion pins the Stripe-Version header (default StripeAPIVersion).
+	APIVersion string `yaml:"api_version"`
 }
 
 // AuthConfig controls dashboard user accounts.
@@ -598,6 +618,15 @@ func (c *Config) normalizePhase2() error {
 	if st.Lag <= 0 {
 		st.Lag = 15 * time.Minute
 	}
+	if st.Window <= 0 {
+		st.Window = time.Hour
+	}
+	if st.Window < time.Second || (24*time.Hour)%st.Window != 0 {
+		return fmt.Errorf("billing.stripe.window: must be at least 1s and divide 24h evenly, got %s", st.Window)
+	}
+	if st.APIVersion == "" {
+		st.APIVersion = StripeAPIVersion
+	}
 	if c.Auth.SessionTTL <= 0 {
 		c.Auth.SessionTTL = 12 * time.Hour
 	}
@@ -651,6 +680,12 @@ func (c *Config) normalizeCloud() error {
 	}
 	if cc.Stripe.BaseURL == "" {
 		cc.Stripe.BaseURL = "https://api.stripe.com"
+	}
+	if cc.Stripe.APIVersion == "" {
+		cc.Stripe.APIVersion = StripeAPIVersion
+	}
+	if p := cc.Stripe.PortalConfiguration; p != "" && !strings.HasPrefix(p, "bpc_") {
+		return fmt.Errorf("cloud.stripe.portal_configuration: want bpc_..., got %q", p)
 	}
 	cc.Stripe.BaseURL = strings.TrimRight(cc.Stripe.BaseURL, "/")
 	if !cc.Enabled {

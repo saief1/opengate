@@ -402,6 +402,19 @@ var migrations = []migration{
   received_at BIGINT NOT NULL
 )`,
 	}},
+	{7, "stripe hardening: checkout reuse, risk flags, event claims, job leases", []string{
+		`ALTER TABLE org_billing ADD COLUMN checkout_session_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE org_billing ADD COLUMN checkout_plan TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE org_billing ADD COLUMN risk_status TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE org_billing ADD COLUMN risk_detail TEXT NOT NULL DEFAULT ''`,
+		// state: processing while a delivery is being handled, done afterwards.
+		`ALTER TABLE stripe_events ADD COLUMN state TEXT NOT NULL DEFAULT 'done'`,
+		`CREATE TABLE IF NOT EXISTS job_leases (
+  name TEXT PRIMARY KEY,
+  holder TEXT NOT NULL,
+  expires_at BIGINT NOT NULL
+)`,
+	}},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

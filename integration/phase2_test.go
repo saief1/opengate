@@ -276,7 +276,7 @@ func TestCustomerBillingMarkupCSVAndStripe(t *testing.T) {
 	}))
 	defer stripe.Close()
 	e := setupWith(t, func(c *config.Config) {
-		c.Billing.Stripe = config.StripeConfig{Enabled: true, BaseURL: stripe.URL, Lag: time.Nanosecond, Interval: time.Hour}
+		c.Billing.Stripe = config.StripeConfig{Enabled: true, BaseURL: stripe.URL, Lag: time.Nanosecond, Interval: time.Hour, Window: time.Second}
 		c.StripeAPIKey = "sk_test_mock_only"
 	})
 	key, _, projectID := e.newKey("saas", "", nil)
@@ -325,7 +325,7 @@ func TestCustomerBillingMarkupCSVAndStripe(t *testing.T) {
 	}
 
 	// Stripe sync (mock server only) reports Acme's billed cents.
-	time.Sleep(5 * time.Millisecond)
+	time.Sleep(1100 * time.Millisecond) // let the 1s reporting window close
 	sync := e.admin("POST", "/admin/api/billing/stripe/sync", nil, 200)
 	mu.Lock()
 	n := len(events)

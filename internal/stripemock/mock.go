@@ -31,7 +31,9 @@ type Mock struct {
 	WebhookSecret string
 	// APIKey, when set, is required as the bearer token.
 	APIKey string
-	Client *http.Client
+	// Livemode is the livemode flag on delivered events (default false).
+	Livemode bool
+	Client   *http.Client
 
 	mu        sync.Mutex
 	customers map[string]map[string]any
@@ -39,6 +41,10 @@ type Mock struct {
 	portals   map[string]*portal
 	subs      map[string]*subscription
 	idem      map[string]string // idempotency key -> customer id
+	sessIdem  map[string]string // idempotency key -> checkout session id
+	charges   map[string]map[string]any
+	disputes  map[string]map[string]any
+	versions  map[string]int // Stripe-Version header values seen
 	calls     []string
 	events    []string // delivered event types
 	seq       int
@@ -48,7 +54,18 @@ type session struct {
 	ID, Customer, Price, SuccessURL, CancelURL, ClientRef, Subscription string
 	Metadata, SubMetadata                                               map[string]string
 	TrialDays                                                           int
-	Completed                                                           bool
+	Completed, Expired                                                  bool
+	PaymentMethodCollection                                             string
+}
+
+func (s *session) status() string {
+	switch {
+	case s.Completed:
+		return "complete"
+	case s.Expired:
+		return "expired"
+	}
+	return "open"
 }
 
 type portal struct{ ID, Customer, ReturnURL string }
@@ -64,7 +81,9 @@ type subscription struct {
 func New(baseURL, webhookURL, secret string) *Mock {
 	return &Mock{BaseURL: strings.TrimRight(baseURL, "/"), WebhookURL: webhookURL, WebhookSecret: secret,
 		customers: map[string]map[string]any{}, sessions: map[string]*session{}, portals: map[string]*portal{},
-		subs: map[string]*subscription{}, idem: map[string]string{}, Client: &http.Client{Timeout: 10 * time.Second}}
+		subs: map[string]*subscription{}, idem: map[string]string{}, sessIdem: map[string]string{},
+		charges: map[string]map[string]any{}, disputes: map[string]map[string]any{}, versions: map[string]int{},
+		Client: &http.Client{Timeout: 10 * time.Second}}
 }
 
 func (m *Mock) id(prefix string) string {
@@ -100,6 +119,7 @@ func (m *Mock) Handler() http.Handler {
 			_ = r.ParseForm()
 			m.mu.Lock()
 			m.calls = append(m.calls, r.Method+" "+r.URL.Path)
+			m.versions[r.Header.Get("Stripe-Version")]++
 			m.mu.Unlock()
 			fn(w, r)
 		})
@@ -108,6 +128,12 @@ func (m *Mock) Handler() http.Handler {
 	api("POST /v1/checkout/sessions", m.createSession)
 	api("POST /v1/billing_portal/sessions", m.createPortal)
 	api("GET /v1/subscriptions/{id}", m.getSubscription)
+	api("GET /v1/subscriptions", m.listSubscriptions)
+	api("DELETE /v1/subscriptions/{id}", m.deleteSubscription)
+	api("GET /v1/checkout/sessions/{id}", m.getSession)
+	api("POST /v1/checkout/sessions/{id}/expire", m.expireSession)
+	api("GET /v1/charges/{id}", m.getObj(func() map[string]map[string]any { return m.charges }, "charge"))
+	api("GET /v1/disputes/{id}", m.getObj(func() map[string]map[string]any { return m.disputes }, "dispute"))
 	mux.HandleFunc("GET /checkout/{id}", m.checkoutPage)
 	mux.HandleFunc("POST /checkout/{id}/pay", func(w http.ResponseWriter, r *http.Request) {
 		redirect, err := m.Pay(r.PathValue("id"))
@@ -197,13 +223,199 @@ func (m *Mock) createSession(w http.ResponseWriter, r *http.Request) {
 		stripeErr(w, 400, "invalid_request_error", "No such customer: '"+f.Get("customer")+"'")
 		return
 	}
+	key := r.Header.Get("Idempotency-Key")
+	if id, ok := m.sessIdem[key]; ok && key != "" {
+		writeJSON(w, m.sessions[id].json(m.BaseURL))
+		return
+	}
 	trial, _ := strconv.Atoi(f.Get("subscription_data[trial_period_days]"))
 	s := &session{ID: m.id("cs_test_"), Customer: f.Get("customer"), Price: f.Get("line_items[0][price]"), SuccessURL: f.Get("success_url"),
 		CancelURL: f.Get("cancel_url"), ClientRef: f.Get("client_reference_id"), Metadata: meta(f, "metadata"),
-		SubMetadata: meta(f, "subscription_data[metadata]"), TrialDays: trial}
+		SubMetadata: meta(f, "subscription_data[metadata]"), TrialDays: trial, PaymentMethodCollection: f.Get("payment_method_collection")}
 	m.sessions[s.ID] = s
-	writeJSON(w, map[string]any{"id": s.ID, "object": "checkout.session", "url": m.BaseURL + "/checkout/" + s.ID, "mode": "subscription",
-		"customer": s.Customer, "client_reference_id": s.ClientRef, "status": "open"})
+	if key != "" {
+		m.sessIdem[key] = s.ID
+	}
+	writeJSON(w, s.json(m.BaseURL))
+}
+
+func (s *session) json(base string) map[string]any {
+	o := map[string]any{"id": s.ID, "object": "checkout.session", "mode": "subscription",
+		"customer": s.Customer, "client_reference_id": s.ClientRef, "status": s.status(), "metadata": s.Metadata}
+	if s.status() == "open" {
+		o["url"] = base + "/checkout/" + s.ID
+	}
+	if s.Subscription != "" {
+		o["subscription"] = s.Subscription
+	}
+	return o
+}
+
+func (m *Mock) getSession(w http.ResponseWriter, r *http.Request) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := m.sessions[r.PathValue("id")]
+	if s == nil {
+		stripeErr(w, 404, "invalid_request_error", "No such checkout.session")
+		return
+	}
+	writeJSON(w, s.json(m.BaseURL))
+}
+
+func (m *Mock) expireSession(w http.ResponseWriter, r *http.Request) {
+	m.mu.Lock()
+	s := m.sessions[r.PathValue("id")]
+	if s == nil || s.status() != "open" {
+		m.mu.Unlock()
+		stripeErr(w, 400, "invalid_request_error", "Only open Checkout Sessions can be expired")
+		return
+	}
+	s.Expired = true
+	out := s.json(m.BaseURL)
+	m.mu.Unlock()
+	writeJSON(w, out)
+}
+
+// SessionStatus returns open|complete|expired ("" if unknown) (tests).
+func (m *Mock) SessionStatus(id string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s := m.sessions[id]; s != nil {
+		return s.status()
+	}
+	return ""
+}
+
+// SessionTrial reports a session's trial days and payment_method_collection (tests).
+func (m *Mock) SessionTrial(id string) (int, string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s := m.sessions[id]; s != nil {
+		return s.TrialDays, s.PaymentMethodCollection
+	}
+	return 0, ""
+}
+
+// Versions returns the Stripe-Version header values seen (tests).
+func (m *Mock) Versions() map[string]int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := map[string]int{}
+	for k, v := range m.versions {
+		out[k] = v
+	}
+	return out
+}
+
+func (m *Mock) listSubscriptions(w http.ResponseWriter, r *http.Request) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	data := []any{}
+	for _, s := range m.subs {
+		if s.Customer == r.URL.Query().Get("customer") {
+			data = append(data, s.json())
+		}
+	}
+	writeJSON(w, map[string]any{"object": "list", "data": data})
+}
+
+func (m *Mock) deleteSubscription(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	m.mu.Lock()
+	s := m.subs[id]
+	if s == nil {
+		m.mu.Unlock()
+		stripeErr(w, 404, "invalid_request_error", "No such subscription")
+		return
+	}
+	already := s.Status == "canceled"
+	s.Status = "canceled"
+	out := s.json()
+	m.mu.Unlock()
+	writeJSON(w, out)
+	if !already {
+		go func() { _ = m.deliver("customer.subscription.deleted", out) }()
+	}
+}
+
+func (m *Mock) getObj(store func() map[string]map[string]any, kind string) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		m.mu.Lock()
+		o := store()[r.PathValue("id")]
+		m.mu.Unlock()
+		if o == nil {
+			stripeErr(w, 404, "invalid_request_error", "No such "+kind)
+			return
+		}
+		writeJSON(w, o)
+	}
+}
+
+// Charge creates a paid charge for the customer (tests of risk events).
+func (m *Mock) Charge(customer string, amount int64) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	id := m.id("ch_")
+	m.charges[id] = map[string]any{"id": id, "object": "charge", "customer": customer, "amount": amount, "amount_refunded": 0, "currency": "usd", "refunded": false}
+	return id
+}
+
+// Dispute opens a dispute on a charge (charge.dispute.created).
+func (m *Mock) Dispute(charge, reason string) (string, error) {
+	m.mu.Lock()
+	ch := m.charges[charge]
+	if ch == nil {
+		m.mu.Unlock()
+		return "", fmt.Errorf("no such charge %q", charge)
+	}
+	id := m.id("dp_")
+	d := map[string]any{"id": id, "object": "dispute", "charge": charge, "amount": ch["amount"], "currency": "usd", "reason": reason, "status": "needs_response"}
+	m.disputes[id] = d
+	m.mu.Unlock()
+	return id, m.deliver("charge.dispute.created", d)
+}
+
+// CloseDispute closes a dispute as won or lost (charge.dispute.closed).
+func (m *Mock) CloseDispute(id, status string) error {
+	m.mu.Lock()
+	d := m.disputes[id]
+	if d == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("no such dispute %q", id)
+	}
+	d["status"] = status
+	out := map[string]any{}
+	for k, v := range d {
+		out[k] = v
+	}
+	m.mu.Unlock()
+	return m.deliver("charge.dispute.closed", out)
+}
+
+// Refund fully refunds a charge (charge.refunded).
+func (m *Mock) Refund(charge string) error {
+	m.mu.Lock()
+	ch := m.charges[charge]
+	if ch == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("no such charge %q", charge)
+	}
+	ch["amount_refunded"], ch["refunded"] = ch["amount"], true
+	out := map[string]any{}
+	for k, v := range ch {
+		out[k] = v
+	}
+	m.mu.Unlock()
+	return m.deliver("charge.refunded", out)
+}
+
+// EarlyFraudWarning raises a Radar early fraud warning on a charge.
+func (m *Mock) EarlyFraudWarning(charge string) error {
+	m.mu.Lock()
+	id := m.id("issfr_")
+	m.mu.Unlock()
+	return m.deliver("radar.early_fraud_warning.created", map[string]any{"id": id, "object": "radar.early_fraud_warning",
+		"charge": charge, "fraud_type": "made_with_stolen_card", "actionable": true})
 }
 
 func (m *Mock) createPortal(w http.ResponseWriter, r *http.Request) {
@@ -246,7 +458,7 @@ func (m *Mock) getSubscription(w http.ResponseWriter, r *http.Request) {
 func (m *Mock) Pay(sessionID string) (string, error) {
 	m.mu.Lock()
 	s := m.sessions[sessionID]
-	if s == nil || s.Completed {
+	if s == nil || s.status() != "open" {
 		m.mu.Unlock()
 		return "", fmt.Errorf("checkout session %q is not open", sessionID)
 	}
@@ -342,7 +554,7 @@ func (m *Mock) Event(typ string, obj any) (body []byte, signature string) {
 	m.mu.Lock()
 	id := m.id("evt_")
 	m.mu.Unlock()
-	body, _ = json.Marshal(map[string]any{"id": id, "object": "event", "type": typ, "created": time.Now().Unix(), "livemode": false,
+	body, _ = json.Marshal(map[string]any{"id": id, "object": "event", "type": typ, "created": time.Now().Unix(), "livemode": m.Livemode,
 		"data": map[string]any{"object": obj}})
 	return body, cloud.Sign(body, m.WebhookSecret, time.Now())
 }
@@ -399,7 +611,7 @@ func (m *Mock) checkoutPage(w http.ResponseWriter, r *http.Request) {
 		if s.TrialDays > 0 {
 			p.Rows = append(p.Rows, [3]string{"Trial", strconv.Itoa(s.TrialDays) + " days"})
 		}
-		if !s.Completed {
+		if s.status() == "open" {
 			p.Buttons = [][3]string{{"/checkout/" + s.ID + "/pay", "Subscribe", "pay"}}
 		}
 	}

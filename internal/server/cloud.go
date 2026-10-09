@@ -2,15 +2,19 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/opengate-dev/opengate/internal/budget"
 	"github.com/opengate-dev/opengate/internal/cloud"
 	"github.com/opengate-dev/opengate/internal/config"
 	"github.com/opengate-dev/opengate/internal/store"
@@ -29,7 +33,7 @@ type cachedPlan struct {
 }
 
 func newCloudState(cfg *config.Config, client *http.Client) *cloudState {
-	return &cloudState{stripe: &cloud.Stripe{BaseURL: cfg.Cloud.Stripe.BaseURL, APIKey: cfg.StripeAPIKey, Client: client},
+	return &cloudState{stripe: &cloud.Stripe{BaseURL: cfg.Cloud.Stripe.BaseURL, APIKey: cfg.StripeAPIKey, APIVersion: cfg.Cloud.Stripe.APIVersion, Client: client},
 		plans: map[string]cachedPlan{}}
 }
 
@@ -184,6 +188,7 @@ func (s *Server) registerCloud(mux *http.ServeMux, h func(string, http.HandlerFu
 	h("POST /admin/api/billing/checkout", s.cloudCheckout)
 	h("POST /admin/api/billing/portal", s.cloudPortal)
 	h("PUT /admin/api/billing/plan", s.cloudSetPlan)
+	h("POST /admin/api/billing/risk/clear", s.cloudClearRisk)
 	mux.HandleFunc("POST /cloud/stripe/webhook", s.cloudWebhook)
 }
 
@@ -218,6 +223,7 @@ func (s *Server) cloudBilling(w http.ResponseWriter, r *http.Request) {
 		"plan": b.Plan, "effective_plan": eff, "status": b.Status, "current_period_end": b.CurrentPeriodEnd,
 		"cancel_at_period_end": b.CancelAtPeriodEnd, "past_due_since": b.PastDueSince,
 		"has_subscription": b.StripeSubscriptionID != "", "has_customer": b.StripeCustomerID != "",
+		"risk_status": b.RiskStatus, "suspended": b.Suspended(),
 		"usage": map[string]any{"period": period, "requests": reqs, "projects": projects, "members": members, "pending_invites": pending},
 		"plans": plans, "sales_url": s.cfg.Cloud.SalesURL,
 		"can_manage": p.Kind == "token" || p.Role == store.RoleOwner,
@@ -255,7 +261,7 @@ func (s *Server) cloudCheckout(w http.ResponseWriter, r *http.Request) {
 		storeErr(w, err)
 		return
 	}
-	if b.StripeSubscriptionID != "" && b.Status != "canceled" && b.Status != "incomplete_expired" {
+	if b.StripeSubscriptionID != "" && cloud.LiveStatus(b.Status) {
 		writeError(w, http.StatusConflict, "invalid_request_error", "subscription_exists", "This organization already has a subscription; change or cancel it in the billing portal.")
 		return
 	}
@@ -280,18 +286,84 @@ func (s *Server) cloudCheckout(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A1: Stripe is the source of truth. If the customer already has a live
+	// subscription (a missed webhook, another tab), adopt it instead of
+	// opening a second Checkout. Any past subscription also means the trial
+	// was used.
+	subs, err := s.cloud.stripe.ListSubscriptions(r.Context(), b.StripeCustomerID)
+	if err != nil {
+		s.stripeFail(w, "list subscriptions", err)
+		return
+	}
+	for _, sub := range subs {
+		if cloud.LiveStatus(sub.Status) {
+			if err := s.applySubscription(r.Context(), "checkout", sub, org); err != nil {
+				s.log.Warn("adopt existing subscription", "org_id", org, "err", err)
+			}
+			writeError(w, http.StatusConflict, "invalid_request_error", "subscription_exists", "This organization already has a subscription; change or cancel it in the billing portal.")
+			return
+		}
+	}
+	// Reuse the org's open Checkout Session for the same plan; expire one
+	// for another plan, so at most one payable session exists per org.
+	if b.CheckoutSessionID != "" {
+		cs, err := s.cloud.stripe.GetCheckoutSession(r.Context(), b.CheckoutSessionID)
+		switch {
+		case err != nil:
+			var ae *cloud.APIError
+			if !errors.As(err, &ae) || ae.Status != http.StatusNotFound {
+				s.stripeFail(w, "get checkout session", err)
+				return
+			}
+		case cs.Status == "open" && b.CheckoutPlan == plan.ID && cs.URL != "":
+			writeJSON(w, 200, map[string]any{"url": cs.URL, "id": cs.ID, "reused": true})
+			return
+		case cs.Status == "open":
+			if err := s.cloud.stripe.ExpireCheckoutSession(r.Context(), cs.ID); err != nil {
+				s.stripeFail(w, "expire checkout session", err)
+				return
+			}
+		case cs.Status == "complete":
+			writeError(w, http.StatusConflict, "invalid_request_error", "checkout_completed", "Payment received; your plan will update in a moment.")
+			return
+		}
+	}
+	trial := s.cfg.Cloud.Stripe.TrialDays
+	if len(subs) > 0 {
+		trial = 0 // one trial per organization
+	}
 	base := s.cfg.Cloud.PublicURL + "/ui/"
-	sess, err := s.cloud.stripe.CreateCheckoutSession(r.Context(), cloud.CheckoutParams{
+	// The idempotency key is derived from the state this request saw, so a
+	// double submit or a retry after a lost response returns the same session.
+	h := sha256.New()
+	fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%d", org, plan.ID, b.StripeCustomerID, b.CheckoutSessionID, trial)
+	for _, sub := range subs {
+		fmt.Fprintf(h, "\x00%s:%s", sub.ID, sub.Status)
+	}
+	params := cloud.CheckoutParams{
 		OrgID: org, CustomerID: b.StripeCustomerID, PriceID: plan.StripePriceID,
 		SuccessURL: base + "#billing?checkout=success&session_id={CHECKOUT_SESSION_ID}", CancelURL: base + "#billing?checkout=cancel",
-		TrialDays: s.cfg.Cloud.Stripe.TrialDays, AllowPromotionCodes: s.cfg.Cloud.Stripe.AllowPromotionCodes, AutomaticTax: s.cfg.Cloud.Stripe.AutomaticTax,
-	})
+		IdempotencyKey: "og-checkout-" + hex.EncodeToString(h.Sum(nil)[:12]),
+		TrialDays:      trial, TrialWithoutCard: s.cfg.Cloud.Stripe.TrialWithoutCard,
+		AllowPromotionCodes: s.cfg.Cloud.Stripe.AllowPromotionCodes, AutomaticTax: s.cfg.Cloud.Stripe.AutomaticTax,
+	}
+	sess, err := s.cloud.stripe.CreateCheckoutSession(r.Context(), params)
+	if err == nil && sess.Status != "" && sess.Status != "open" {
+		// The key replayed a session that has since expired: open a fresh one.
+		params.IdempotencyKey += "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+		sess, err = s.cloud.stripe.CreateCheckoutSession(r.Context(), params)
+	}
 	if err != nil {
 		s.stripeFail(w, "create checkout session", err)
 		return
 	}
+	b.CheckoutSessionID, b.CheckoutPlan = sess.ID, plan.ID
+	if err := s.store.PutOrgBilling(r.Context(), b); err != nil {
+		storeErr(w, err)
+		return
+	}
 	s.audit(r, "billing.checkout", org, map[string]string{"plan": plan.ID, "session": sess.ID})
-	writeJSON(w, 200, map[string]string{"url": sess.URL, "id": sess.ID})
+	writeJSON(w, 200, map[string]any{"url": sess.URL, "id": sess.ID})
 }
 
 func (s *Server) cloudPortal(w http.ResponseWriter, r *http.Request) {
@@ -308,7 +380,7 @@ func (s *Server) cloudPortal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "invalid_request_error", "no_billing_account", "Subscribe to a plan first.")
 		return
 	}
-	sess, err := s.cloud.stripe.CreatePortalSession(r.Context(), b.StripeCustomerID, s.cfg.Cloud.PublicURL+"/ui/#billing")
+	sess, err := s.cloud.stripe.CreatePortalSession(r.Context(), b.StripeCustomerID, s.cfg.Cloud.PublicURL+"/ui/#billing", s.cfg.Cloud.Stripe.PortalConfiguration)
 	if err != nil {
 		s.stripeFail(w, "create portal session", err)
 		return
@@ -355,6 +427,30 @@ func (s *Server) cloudSetPlan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, b)
 }
 
+// cloudClearRisk lets the operator lift a dispute/fraud suspension after
+// reviewing it in the Stripe Dashboard.
+func (s *Server) cloudClearRisk(w http.ResponseWriter, r *http.Request) {
+	if principalOf(r).Kind != "token" {
+		writeError(w, http.StatusForbidden, "permission_error", "operator_only", "only the operator (admin token) can clear risk flags")
+		return
+	}
+	org := orgID(r)
+	b, err := s.store.GetOrgBilling(r.Context(), org, s.cfg.Cloud.DefaultPlan)
+	if err != nil {
+		storeErr(w, err)
+		return
+	}
+	prev := b.RiskStatus
+	b.RiskStatus, b.RiskDetail = "", ""
+	if err := s.store.PutOrgBilling(r.Context(), b); err != nil {
+		storeErr(w, err)
+		return
+	}
+	s.forgetPlan(org)
+	s.audit(r, "billing.risk.clear", org, map[string]string{"previous": prev})
+	writeJSON(w, 200, b)
+}
+
 func (s *Server) stripeFail(w http.ResponseWriter, what string, err error) {
 	s.log.Error("stripe "+what+" failed", "err", err)
 	writeError(w, http.StatusBadGateway, "api_error", "billing_unavailable", "The billing provider is unavailable; please try again.")
@@ -381,34 +477,59 @@ func (s *Server) cloudWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid_request", "malformed event")
 		return
 	}
+	// A10: a test-mode event must never change state in a live deployment
+	// (and vice versa), whatever endpoint it was sent to.
+	if ev.Livemode != s.cloud.stripe.Livemode() {
+		s.log.Warn("stripe webhook: livemode mismatch", "event", ev.ID, "event_livemode", ev.Livemode)
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "livemode_mismatch", "event livemode does not match this deployment's Stripe key")
+		return
+	}
+	// A12: atomic claim (unique insert) so concurrent deliveries of one event
+	// can't both process it.
 	ctx := r.Context()
-	if seen, err := s.store.StripeEventSeen(ctx, ev.ID); err != nil {
+	claim, err := s.store.ClaimStripeEvent(ctx, ev.ID, ev.Type, 5*time.Minute)
+	if err != nil {
 		storeErr(w, err)
 		return
-	} else if seen {
+	}
+	switch claim {
+	case store.EventDone:
 		writeJSON(w, 200, map[string]any{"received": true, "duplicate": true})
+		return
+	case store.EventBusy:
+		// Another delivery is processing it; a 409 makes Stripe retry later.
+		writeError(w, http.StatusConflict, "invalid_request_error", "event_in_progress", "event is being processed")
 		return
 	}
 	if err := s.handleStripeEvent(ctx, &ev); err != nil {
+		_ = s.store.ReleaseStripeEvent(context.WithoutCancel(ctx), ev.ID)
 		// 5xx makes Stripe retry with backoff for up to 3 days.
 		s.log.Error("stripe webhook processing failed", "event", ev.ID, "type", ev.Type, "err", err)
 		writeError(w, http.StatusInternalServerError, "server_error", "internal_error", "processing failed")
 		return
 	}
-	if err := s.store.MarkStripeEvent(ctx, ev.ID, ev.Type); err != nil {
-		s.log.Warn("mark stripe event", "err", err)
+	if err := s.store.FinishStripeEvent(ctx, ev.ID); err != nil {
+		s.log.Warn("finish stripe event", "err", err)
 	}
 	writeJSON(w, 200, map[string]any{"received": true})
 }
 
 func (s *Server) handleStripeEvent(ctx context.Context, ev *cloud.Event) error {
 	switch {
-	case ev.Type == "checkout.session.completed":
+	case ev.Type == "checkout.session.completed" || ev.Type == "checkout.session.expired":
 		var cs cloud.Session
 		if err := json.Unmarshal(ev.Data.Object, &cs); err != nil {
 			return err
 		}
-		if cs.Mode != "subscription" || cs.ClientReferenceID == "" || cs.Subscription == "" {
+		if cs.Mode != "subscription" || cs.ClientReferenceID == "" {
+			return nil
+		}
+		// Forget the session first, so applying the subscription doesn't try
+		// to expire the session that just completed.
+		if err := s.clearCheckout(ctx, cs.ClientReferenceID, cs.ID); err != nil {
+			return err
+		}
+		if cs.Subscription == "" {
 			return nil
 		}
 		return s.syncSubscription(ctx, ev, string(cs.Subscription), cs.ClientReferenceID)
@@ -424,13 +545,36 @@ func (s *Server) handleStripeEvent(ctx context.Context, ev *cloud.Event) error {
 			return nil
 		}
 		return s.syncSubscription(ctx, ev, sub, "")
+	case strings.HasPrefix(ev.Type, "charge.dispute."):
+		return s.handleDispute(ctx, ev)
+	case ev.Type == "charge.refunded":
+		return s.handleRefund(ctx, ev)
+	case strings.HasPrefix(ev.Type, "radar.early_fraud_warning."):
+		return s.handleFraudWarning(ctx, ev)
 	}
 	return nil // not an event we act on
 }
 
+// clearCheckout forgets the org's open session once it completed/expired.
+func (s *Server) clearCheckout(ctx context.Context, org, sessionID string) error {
+	b, err := s.store.GetOrgBilling(ctx, org, s.cfg.Cloud.DefaultPlan)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if b.CheckoutSessionID != sessionID {
+		return nil
+	}
+	b.CheckoutSessionID, b.CheckoutPlan = "", ""
+	if _, err := s.store.GetOrg(ctx, org); err != nil {
+		return nil // unknown org: nothing to clear
+	}
+	return s.store.PutOrgBilling(ctx, b)
+}
+
 // syncSubscription fetches the subscription and applies it to its org.
-// The org comes from the Checkout session's client_reference_id, the
-// subscription metadata (both set by OpenGate), or the linked customer.
 func (s *Server) syncSubscription(ctx context.Context, ev *cloud.Event, subID, org string) error {
 	sub, err := s.cloud.stripe.GetSubscription(ctx, subID)
 	if err != nil {
@@ -441,14 +585,22 @@ func (s *Server) syncSubscription(ctx context.Context, ev *cloud.Event, subID, o
 		}
 		return err
 	}
+	return s.applySubscription(ctx, ev.ID+" "+ev.Type, sub, org)
+}
+
+// applySubscription applies a fetched subscription to its org. The org
+// comes from the Checkout session's client_reference_id, the subscription
+// metadata (both set by OpenGate), or the linked customer.
+func (s *Server) applySubscription(ctx context.Context, source string, sub *cloud.Subscription, org string) error {
 	if org == "" {
 		org = sub.Metadata["org_id"]
 	}
 	var b *store.OrgBilling
+	var err error
 	if org != "" {
 		if _, err := s.store.GetOrg(ctx, org); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
-				s.log.Warn("stripe webhook: unknown org", "event", ev.ID, "org_id", org)
+				s.log.Warn("stripe: unknown org", "source", source, "org_id", org)
 				return nil
 			}
 			return err
@@ -457,34 +609,205 @@ func (s *Server) syncSubscription(ctx context.Context, ev *cloud.Event, subID, o
 			return err
 		}
 	} else if b, err = s.store.OrgBillingByCustomer(ctx, string(sub.Customer)); errors.Is(err, store.ErrNotFound) {
-		s.log.Warn("stripe webhook: no org for customer", "event", ev.ID, "customer", sub.Customer)
+		s.log.Warn("stripe: no org for customer", "source", source, "customer", sub.Customer)
 		return nil
 	} else if err != nil {
 		return err
 	}
 	before := *b
-	if !cloud.ApplySubscription(&s.cfg.Cloud, b, sub, time.Now()) {
-		s.log.Warn("stripe webhook: subscription ignored", "event", ev.ID, "org_id", b.OrgID, "subscription", sub.ID,
+	switch cloud.ApplySubscription(&s.cfg.Cloud, b, sub, time.Now()) {
+	case cloud.Ignored:
+		s.log.Warn("stripe: subscription ignored", "source", source, "org_id", b.OrgID, "subscription", sub.ID,
 			"customer", sub.Customer, "price", sub.PriceID(), "status", sub.Status)
 		return nil
+	case cloud.Duplicate:
+		return s.cancelDuplicate(ctx, source, b, sub)
+	}
+	if cloud.LiveStatus(b.Status) && b.CheckoutSessionID != "" {
+		// The org is subscribed now: any other open Checkout could only create
+		// a duplicate, so close it.
+		if err := s.cloud.stripe.ExpireCheckoutSession(ctx, b.CheckoutSessionID); err != nil {
+			s.log.Debug("expire stale checkout session", "session", b.CheckoutSessionID, "err", err)
+		}
+		b.CheckoutSessionID, b.CheckoutPlan = "", ""
 	}
 	if err := s.store.PutOrgBilling(ctx, b); err != nil {
 		if errors.Is(err, store.ErrConflict) {
-			s.log.Warn("stripe webhook: customer already linked to another org", "event", ev.ID, "org_id", b.OrgID, "customer", sub.Customer)
+			s.log.Warn("stripe: customer already linked to another org", "source", source, "org_id", b.OrgID, "customer", sub.Customer)
 			return nil
 		}
 		return err
 	}
 	s.forgetPlan(b.OrgID)
 	if before.Plan != b.Plan || before.Status != b.Status || before.CancelAtPeriodEnd != b.CancelAtPeriodEnd {
-		detail, _ := json.Marshal(map[string]any{"plan": b.Plan, "status": b.Status, "from_plan": before.Plan, "from_status": before.Status,
-			"cancel_at_period_end": b.CancelAtPeriodEnd, "event": ev.ID, "type": ev.Type})
-		if err := s.store.InsertAudit(ctx, &store.AuditEntry{OrgID: b.OrgID, ActorType: "stripe", Action: "billing.subscription",
-			Target: sub.ID, Status: 200, Detail: detail}); err != nil {
-			s.log.Warn("audit billing change", "err", err)
+		s.billingAudit(ctx, b.OrgID, "billing.subscription", sub.ID, map[string]any{"plan": b.Plan, "status": b.Status, "from_plan": before.Plan,
+			"from_status": before.Status, "cancel_at_period_end": b.CancelAtPeriodEnd, "source": source})
+	}
+	s.log.Info("subscription synced", "org_id", b.OrgID, "plan", b.Plan, "status", b.Status, "source", source)
+	return nil
+}
+
+// cancelDuplicate cancels a second live subscription for an org that
+// already has one, so the customer isn't billed twice.
+func (s *Server) cancelDuplicate(ctx context.Context, source string, b *store.OrgBilling, sub *cloud.Subscription) error {
+	if _, err := s.cloud.stripe.CancelSubscription(ctx, sub.ID, "og-cancel-dup-"+sub.ID); err != nil {
+		var ae *cloud.APIError
+		if !errors.As(err, &ae) || ae.Status != http.StatusNotFound {
+			return err // retry via Stripe's webhook retries
 		}
 	}
-	s.log.Info("subscription synced", "org_id", b.OrgID, "plan", b.Plan, "status", b.Status, "event", ev.ID)
+	s.billingAudit(ctx, b.OrgID, "billing.subscription.duplicate_canceled", sub.ID, map[string]any{"current": b.StripeSubscriptionID, "source": source})
+	s.alert("billing_duplicate_subscription", b.OrgID, fmt.Sprintf("OpenGate Cloud: canceled duplicate subscription %s for org %s (current: %s). If its first invoice was paid, refund it in the Stripe Dashboard.",
+		sub.ID, b.OrgID, b.StripeSubscriptionID))
+	return nil
+}
+
+func (s *Server) billingAudit(ctx context.Context, org, action, target string, detail map[string]any) {
+	d, _ := json.Marshal(detail)
+	if err := s.store.InsertAudit(ctx, &store.AuditEntry{OrgID: org, ActorType: "stripe", Action: action, Target: target, Status: 200, Detail: d}); err != nil {
+		s.log.Warn("audit billing change", "err", err)
+	}
+}
+
+func (s *Server) alert(kind, org, text string) {
+	if s.alerter != nil {
+		s.alerter.Send(budget.Event{Kind: kind, Scope: "org", ScopeID: org, Text: text})
+	}
+}
+
+// ---------- risk events (A3) ----------
+
+// orgForCharge resolves a charge to its org via the charge's customer.
+func (s *Server) orgForCharge(ctx context.Context, chargeID string) (*store.OrgBilling, *cloud.Charge, error) {
+	if chargeID == "" {
+		return nil, nil, nil
+	}
+	ch, err := s.cloud.stripe.GetCharge(ctx, chargeID)
+	if err != nil {
+		var ae *cloud.APIError
+		if errors.As(err, &ae) && ae.Status == http.StatusNotFound {
+			return nil, nil, nil
+		}
+		return nil, nil, err
+	}
+	b, err := s.store.OrgBillingByCustomer(ctx, string(ch.Customer))
+	if errors.Is(err, store.ErrNotFound) {
+		s.log.Warn("stripe risk event: no org for charge", "charge", chargeID, "customer", ch.Customer)
+		return nil, ch, nil
+	}
+	return b, ch, err
+}
+
+func riskRank(r string) int {
+	switch r {
+	case store.RiskFraudWarning:
+		return 3
+	case store.RiskDisputeLost:
+		return 2
+	case store.RiskDisputeOpen:
+		return 1
+	}
+	return 0
+}
+
+// setRisk raises (never lowers) the org's risk flag.
+func (s *Server) setRisk(ctx context.Context, b *store.OrgBilling, risk, detail string) error {
+	if riskRank(risk) <= riskRank(b.RiskStatus) {
+		return nil
+	}
+	b.RiskStatus, b.RiskDetail = risk, detail
+	if err := s.store.PutOrgBilling(ctx, b); err != nil {
+		return err
+	}
+	s.forgetPlan(b.OrgID)
+	return nil
+}
+
+func money(amount int64, cur string) string {
+	return fmt.Sprintf("%.2f %s", float64(amount)/100, strings.ToUpper(cur))
+}
+
+func (s *Server) handleDispute(ctx context.Context, ev *cloud.Event) error {
+	var d cloud.Dispute
+	if err := json.Unmarshal(ev.Data.Object, &d); err != nil {
+		return err
+	}
+	if fresh, err := s.cloud.stripe.GetDispute(ctx, d.ID); err == nil {
+		d = *fresh
+	} else {
+		var ae *cloud.APIError
+		if !errors.As(err, &ae) || ae.Status != http.StatusNotFound {
+			return err
+		}
+	}
+	b, _, err := s.orgForCharge(ctx, string(d.Charge))
+	if err != nil || b == nil {
+		return err
+	}
+	s.billingAudit(ctx, b.OrgID, "billing."+strings.TrimPrefix(ev.Type, "charge."), d.ID, map[string]any{
+		"status": d.Status, "reason": d.Reason, "amount": d.Amount, "currency": d.Currency, "charge": string(d.Charge), "event": ev.ID})
+	switch d.Status {
+	case "lost":
+		if err := s.setRisk(ctx, b, store.RiskDisputeLost, d.ID); err != nil {
+			return err
+		}
+		s.alert("billing_dispute_lost", b.OrgID, fmt.Sprintf("OpenGate Cloud: dispute %s (%s) for org %s was lost; paid plan suspended until cleared.", d.ID, money(d.Amount, d.Currency), b.OrgID))
+	case "won", "warning_closed", "prevented":
+		if (b.RiskStatus == store.RiskDisputeOpen || b.RiskStatus == store.RiskDisputeLost) && b.RiskDetail == d.ID {
+			b.RiskStatus, b.RiskDetail = "", ""
+			if err := s.store.PutOrgBilling(ctx, b); err != nil {
+				return err
+			}
+			s.forgetPlan(b.OrgID)
+		}
+		if ev.Type == "charge.dispute.closed" {
+			s.alert("billing_dispute_closed", b.OrgID, fmt.Sprintf("OpenGate Cloud: dispute %s for org %s closed (%s).", d.ID, b.OrgID, d.Status))
+		}
+	default: // open: needs_response, under_review, warning_*
+		if err := s.setRisk(ctx, b, store.RiskDisputeOpen, d.ID); err != nil {
+			return err
+		}
+		if ev.Type == "charge.dispute.created" {
+			s.alert("billing_dispute_created", b.OrgID, fmt.Sprintf("OpenGate Cloud: new dispute %s (%s, reason %s) for org %s. Respond in the Stripe Dashboard.", d.ID, money(d.Amount, d.Currency), d.Reason, b.OrgID))
+		}
+	}
+	return nil
+}
+
+func (s *Server) handleRefund(ctx context.Context, ev *cloud.Event) error {
+	var ch cloud.Charge
+	if err := json.Unmarshal(ev.Data.Object, &ch); err != nil {
+		return err
+	}
+	b, fresh, err := s.orgForCharge(ctx, ch.ID)
+	if err != nil || b == nil {
+		return err
+	}
+	s.billingAudit(ctx, b.OrgID, "billing.charge.refunded", fresh.ID, map[string]any{"amount": fresh.Amount, "amount_refunded": fresh.AmountRefunded,
+		"currency": fresh.Currency, "full": fresh.Refunded, "event": ev.ID})
+	s.alert("billing_refund", b.OrgID, fmt.Sprintf("OpenGate Cloud: charge %s for org %s refunded (%s of %s).", fresh.ID, b.OrgID, money(fresh.AmountRefunded, fresh.Currency), money(fresh.Amount, fresh.Currency)))
+	return nil
+}
+
+func (s *Server) handleFraudWarning(ctx context.Context, ev *cloud.Event) error {
+	var w cloud.EarlyFraudWarning
+	if err := json.Unmarshal(ev.Data.Object, &w); err != nil {
+		return err
+	}
+	b, _, err := s.orgForCharge(ctx, string(w.Charge))
+	if err != nil || b == nil {
+		return err
+	}
+	s.billingAudit(ctx, b.OrgID, "billing."+strings.TrimPrefix(ev.Type, "radar."), w.ID, map[string]any{"fraud_type": w.FraudType, "actionable": w.Actionable,
+		"charge": string(w.Charge), "event": ev.ID})
+	if ev.Type != "radar.early_fraud_warning.created" {
+		return nil
+	}
+	if err := s.setRisk(ctx, b, store.RiskFraudWarning, w.ID); err != nil {
+		return err
+	}
+	s.alert("billing_fraud_warning", b.OrgID, fmt.Sprintf("OpenGate Cloud: early fraud warning %s (%s) on charge %s for org %s; paid plan suspended. Review, refund and cancel in Stripe, then clear the flag.",
+		w.ID, w.FraudType, w.Charge, b.OrgID))
 	return nil
 }
 
