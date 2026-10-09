@@ -30,19 +30,35 @@ the same mock (`integration/cloud_test.go`).
 
 ```
 Owner clicks Upgrade ──► POST /admin/api/billing/checkout ──► Stripe customer (one per org, idempotent)
-                                                         └─► Checkout Session (client_reference_id = org,
+                                                         ├─► list the customer's subscriptions: adopt a live one (409),
+                                                         │   cancel an incomplete one
+                                                         └─► reuse the org's open Checkout Session, or expire it and
+                                                             create one (idempotency key; client_reference_id = org,
                                                              subscription_data.metadata.org_id = org) ──► redirect
-Stripe ──► POST /cloud/stripe/webhook (signed) ──► verify ─► de-duplicate by event id
+Stripe ──► POST /cloud/stripe/webhook (signed) ──► verify ─► livemode matches key ─► atomic claim of event id
         ──► GET /v1/subscriptions/{id}  (fresh state; never trust event payload order)
         ──► org_billing: plan (by price id), status, period end, cancel_at_period_end ──► audit log ("stripe")
 ```
 
-* **Effective plan:** `active`/`trialing` keep the paid plan. `past_due` keeps it for `cloud.grace_period` (default 7 days)
+* **Effective plan:** an org flagged by a lost dispute or a Radar early fraud warning drops to `default_plan` until the
+  operator clears it (`POST /admin/api/billing/risk/clear`, admin token). Otherwise `active`/`trialing` keep the paid plan. `past_due` keeps it for `cloud.grace_period` (default 7 days)
   while Stripe retries the payment. `unpaid`/`canceled`/`incomplete_expired` fall back to `default_plan`. Plans assigned
   by the operator (`PUT /admin/api/billing/plan`, admin token only; e.g. Enterprise invoiced offline) always apply.
 * **Webhook safety:**
   * HMAC-SHA256 signatures with 5-minute replay tolerance, constant-time compare, and multiple `v1` signatures accepted (secret rotation).
-  * Processed event ids are stored (idempotency).
+  * Every request pins `Stripe-Version: 2026-09-30.endive`; create the webhook endpoint at the same version.
+  * Events whose `livemode` doesn't match the key (`sk_live_`/`rk_live_` vs. test) are rejected with 400.
+  * Event ids are claimed with a unique insert before processing, so concurrent deliveries are handled once;
+    a failed handler releases the claim so Stripe's retry reprocesses it.
+  * **No double subscriptions:** one payable Checkout Session per org (reused on a second click, expired on a plan
+    switch or once the org is subscribed), idempotency keys on every create, a live subscription the webhook missed
+    is adopted instead of opening another Checkout, and a second live subscription for the same customer is canceled
+    automatically (audited + alert; refund its first invoice in the Dashboard if it was paid).
+  * **Risk events:** `charge.dispute.created|updated|closed`, `charge.refunded` and `radar.early_fraud_warning.created`
+    are audited and sent to the alert webhook. An open dispute only flags the org; a lost dispute or an early fraud
+    warning suspends paid limits; a won dispute clears its flag.
+  * Cancellation scheduled in the portal is recognized whether Stripe sets `cancel_at_period_end` or (current API
+    versions) `cancel_at`.
   * Subscriptions are re-fetched, so stale or out-of-order events can't resurrect a canceled plan.
   * A Stripe customer is bound to exactly one org (unique index). Subscriptions of a different customer, unknown prices and unknown orgs are ignored and logged.
   * Processing failures answer 5xx, so Stripe retries for up to 3 days.
@@ -56,19 +72,24 @@ Stripe ──► POST /cloud/stripe/webhook (signed) ──► verify ─► de-
 1. **Product and price.** Create a product "OpenGate Cloud Team" with a recurring monthly price ($49, or your final
    price). Copy the `price_...` id into `STRIPE_PRICE_TEAM`. Add more plans by adding entries to `cloud.plans` with
    their own `stripe_price_id`.
-2. **Customer portal** (Settings → Billing → Customer portal): allow updating payment methods, viewing invoices and
-   canceling (choose "at end of billing period"). To let customers switch plans in the portal, add the plan prices
-   under *Products*.
-3. **Webhook endpoint** (Developers → Webhooks): `https://<your-domain>/cloud/stripe/webhook`, with events
-   `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`,
-   `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`, `invoice.payment_action_required`.
-   Copy the signing secret into `STRIPE_WEBHOOK_SECRET`.
-4. **API key.** Prefer a *restricted* key (`rk_...`) with write access to Customers, Checkout Sessions and Customer portal,
-   and read access to Subscriptions. Put it in `STRIPE_API_KEY`.
+2. **Customer portal:** create a configuration via the API (reproducible; see [stripe-test-setup.md](stripe-test-setup.md)):
+   payment-method update, invoice history, cancel at period end (with reasons), plan switching off for now. Put its
+   `bpc_...` id in `cloud.stripe.portal_configuration`.
+3. **Webhook endpoint** (Developers → Webhooks), API version `2026-09-30.endive`:
+   `https://<your-domain>/cloud/stripe/webhook`, with events `checkout.session.completed`, `checkout.session.expired`,
+   `customer.subscription.created|updated|deleted|trial_will_end`, `invoice.paid`, `invoice.payment_failed`,
+   `invoice.payment_action_required`, `charge.dispute.created|updated|closed`, `charge.refunded`,
+   `radar.early_fraud_warning.created`. Copy the signing secret into `STRIPE_WEBHOOK_SECRET`.
+4. **API key.** Prefer a *restricted* key (`rk_...`): **write** Customers, Checkout Sessions, Customer portal and
+   Subscriptions (needed to cancel duplicate/incomplete subscriptions); **read** Charges and Disputes. Put it in
+   `STRIPE_API_KEY`.
 5. **Local testing against real Stripe test mode:** `stripe listen --forward-to localhost:8080/cloud/stripe/webhook`
    prints a `whsec_...` for local use. Pay with card `4242 4242 4242 4242`. (Events from `stripe trigger` carry no org
-   metadata and are correctly ignored.)
-6. Optional: `cloud.stripe.automatic_tax: true` once Stripe Tax is configured; `trial_days`; `allow_promotion_codes`.
+   metadata and are correctly ignored.) `examples/cloud-stripe-test.yaml` is the config used for the recorded live
+   test-mode run ([stripe-test-setup.md](stripe-test-setup.md)).
+6. **Trial:** the launch default is 14 days with no card (`trial_days: 14`, `trial_without_card: true`). Only an org's
+   first subscription gets a trial; a trial that ends without a card is canceled and the org returns to Free.
+7. Optional: `cloud.stripe.automatic_tax: true` once a Stripe Tax registration exists; `allow_promotion_codes`.
 
 ## Deploy
 

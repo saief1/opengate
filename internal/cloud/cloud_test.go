@@ -93,6 +93,16 @@ func TestApplySubscriptionAndEffective(t *testing.T) {
 			t.Fatalf("duplicate %s: %v %+v", st, o, b)
 		}
 	}
+	// Portal cancellation on current API versions: cancel_at, not cancel_at_period_end.
+	sc := sub("sub_1", "cus_a", "active", "price_team")
+	sc.CancelAt = 1900000000
+	if ApplySubscription(cc, b, sc, now) != Applied || !b.CancelAtPeriodEnd {
+		t.Fatalf("cancel_at not recognized: %+v", b)
+	}
+	ApplySubscription(cc, b, sub("sub_1", "cus_a", "active", "price_team"), now) // un-cancel
+	if b.CancelAtPeriodEnd {
+		t.Fatal("renewal not restored")
+	}
 	// Risk suspension: a lost dispute / fraud warning pauses the paid plan.
 	b.RiskStatus = store.RiskDisputeOpen
 	if Effective(cc, b, now).ID != "team" {

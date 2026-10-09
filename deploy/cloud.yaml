@@ -24,7 +24,10 @@ cloud:
   grace_period: 168h      # past_due keeps paid limits while Stripe retries
   sales_url: "mailto:sales@example.com"   # TODO: real sales address
   stripe:
-    trial_days: 0
+    # api_version defaults to the pinned 2026-09-30.endive.
+    # portal_configuration: bpc_...   # live-mode Customer Portal configuration id
+    trial_days: 14          # approved default: 14-day Team trial, no card required
+    trial_without_card: true
     allow_promotion_codes: true
     automatic_tax: false  # enable once Stripe Tax is configured
   plans:                  # DRAFT pricing; limits of 0 = unlimited

@@ -112,7 +112,9 @@ guardrails: {pii: off, categories: [], responses: false, injection: off}   # pii
 billing:
   customer_header: X-OpenGate-Customer   # honored only for projects with trust_customer_header, or keys bound to a customer
   ignore_user_field: false
-  stripe: {enabled: false, event_name: opengate_usage, unit: cents, interval: 1h, lag: 15m, base_url: https://api.stripe.com}
+  stripe: {enabled: false, event_name: opengate_usage, unit: cents, interval: 1h, lag: 15m, base_url: https://api.stripe.com,
+           window: 1h,          # fixed, epoch-aligned reporting window (>= 1s, divides 24h); one meter event per customer per window
+           api_version: ""}     # default: the pinned Stripe-Version (2026-09-30.endive)
 ```
 
 ## `cloud` (hosted, multi-tenant mode; see [cloud.md](cloud.md))
@@ -125,7 +127,14 @@ cloud:
   max_orgs_per_user: 3
   grace_period: 168h                      # past_due keeps the paid plan this long
   sales_url: "mailto:sales@example.com"   # linked from contact_sales plans
-  stripe: {base_url: https://api.stripe.com, trial_days: 0, allow_promotion_codes: false, automatic_tax: false}
+  stripe:
+    base_url: https://api.stripe.com
+    api_version: ""                       # default: pinned 2026-09-30.endive (sent as Stripe-Version on every call)
+    portal_configuration: ""              # bpc_... Customer Portal configuration (default: the account default)
+    trial_days: 14                        # first subscription per org only; 0 = no trial
+    trial_without_card: true              # payment_method_collection=if_required; trial ends -> canceled if no card
+    allow_promotion_codes: false
+    automatic_tax: false                  # only after a Stripe Tax registration exists
   plans:                                  # default: Free / Team / Enterprise (draft)
     - {id: team, name: Team, price_usd: 49, interval: month, stripe_price_id: "${STRIPE_PRICE_TEAM}",
        max_requests_month: 1000000, max_members: 25, max_projects: 0, log_retention_days: 30, features: ["..."]}

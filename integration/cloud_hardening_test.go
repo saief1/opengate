@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/opengate-dev/opengate/internal/cloud"
 	"github.com/opengate-dev/opengate/internal/config"
+	"github.com/opengate-dev/opengate/internal/store"
 	"github.com/opengate-dev/opengate/internal/stripemock"
 )
 
@@ -28,6 +30,10 @@ func auditActions(t *testing.T, b *browser) map[string]int {
 		out[a.(map[string]any)["action"].(string)]++
 	}
 	return out
+}
+
+func cloudPlanID(e *env, b *store.OrgBilling) string {
+	return cloud.Effective(&e.cfg.Cloud, b, time.Now()).ID
 }
 
 func withPro(c *config.Config) {
@@ -111,6 +117,33 @@ func TestCloudNoDuplicateSubscriptions(t *testing.T) {
 		t.Fatalf("stale session after adoption: %s", st)
 	}
 	_ = co
+	// A failed first payment (incomplete) doesn't block a new Checkout; it
+	// is canceled so it can't complete next to the new subscription.
+	b4, org4, _ := cloudSignup(t, e, "incomplete@x.test", "Incomplete")
+	b4.do("POST", "/admin/api/billing/checkout", map[string]any{"plan": "team"}, 200)
+	bil4, _ := e.st.GetOrgBilling(context.Background(), org4, "free")
+	m.AddSubscription("sub_incomplete", bil4.StripeCustomerID, "incomplete", "price_team", map[string]string{"org_id": org4})
+	if err := m.Deliver("customer.subscription.created", m.Subscription("sub_incomplete")); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := e.st.GetOrgBilling(context.Background(), org4, "free"); got.Status != "incomplete" || cloudPlanID(e, got) != "free" {
+		t.Fatalf("incomplete: %+v", got)
+	}
+	co4 := b4.do("POST", "/admin/api/billing/checkout", map[string]any{"plan": "team"}, 200)
+	if co4["reused"] != true {
+		t.Fatal("an incomplete subscription must not expire the open Checkout")
+	}
+	if m.Subscription("sub_incomplete")["status"] != "canceled" {
+		t.Fatal("incomplete subscription left open")
+	}
+	if _, err := m.Pay(co4["id"].(string)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "org4 on team", func() bool {
+		got, _ := e.st.GetOrgBilling(context.Background(), org4, "free")
+		return got.Plan == "team" && got.Status == "trialing" && got.StripeSubscriptionID != "sub_incomplete"
+	})
+
 	// Cancel; a re-subscription gets no second trial.
 	if err := m.Cancel("sub_missed"); err != nil {
 		t.Fatal(err)

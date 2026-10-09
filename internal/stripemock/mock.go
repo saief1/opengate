@@ -72,7 +72,7 @@ type portal struct{ ID, Customer, ReturnURL string }
 
 type subscription struct {
 	ID, Customer, Status, Price string
-	PeriodEnd                   int64
+	PeriodEnd, CancelAt         int64
 	CancelAtPeriodEnd           bool
 	Metadata                    map[string]string
 }
@@ -432,7 +432,7 @@ func (m *Mock) createPortal(w http.ResponseWriter, r *http.Request) {
 
 func (s *subscription) json() map[string]any {
 	return map[string]any{"id": s.ID, "object": "subscription", "customer": s.Customer, "status": s.Status,
-		"cancel_at_period_end": s.CancelAtPeriodEnd, "metadata": s.Metadata,
+		"cancel_at_period_end": s.CancelAtPeriodEnd, "cancel_at": s.CancelAt, "metadata": s.Metadata,
 		// current_period_end on the item, like current Stripe API versions.
 		"items": map[string]any{"data": []any{map[string]any{"current_period_end": s.PeriodEnd, "price": map[string]any{"id": s.Price}}}}}
 }
@@ -524,9 +524,11 @@ func (m *Mock) Cancel(id string) error {
 	return m.mutate(id, func(s *subscription) { s.Status = "canceled" }, "customer.subscription.deleted", m.subObj)
 }
 
-// CancelAtPeriodEnd schedules cancellation (customer.subscription.updated).
+// CancelAtPeriodEnd schedules cancellation (customer.subscription.updated)
+// the way the real Customer Portal does on API 2026-09-30: cancel_at is set
+// to the period end and cancel_at_period_end stays false.
 func (m *Mock) CancelAtPeriodEnd(id string) error {
-	return m.mutate(id, func(s *subscription) { s.CancelAtPeriodEnd = true }, "customer.subscription.updated", m.subObj)
+	return m.mutate(id, func(s *subscription) { s.CancelAt = s.PeriodEnd }, "customer.subscription.updated", m.subObj)
 }
 
 // FailPayment marks the subscription past_due (invoice.payment_failed).
@@ -637,14 +639,14 @@ func (m *Mock) portalPage(w http.ResponseWriter, r *http.Request) {
 	p := page{Title: "Manage billing", Sub: "Customer portal · " + pt.Customer, Back: pt.ReturnURL, BackLabel: "Return to OpenGate"}
 	if s := m.subs[subID]; s != nil {
 		p.Rows = [][3]string{{"Subscription", s.ID}, {"Price", s.Price}, {"Status", s.Status},
-			{"Renews", time.Unix(s.PeriodEnd, 0).UTC().Format("2006-01-02")}, {"Cancel at period end", strconv.FormatBool(s.CancelAtPeriodEnd)}}
+			{"Renews", time.Unix(s.PeriodEnd, 0).UTC().Format("2006-01-02")}, {"Cancel at period end", strconv.FormatBool(s.CancelAtPeriodEnd || s.CancelAt > 0)}}
 		base := "/portal/" + pt.ID + "/"
 		if s.Status == "past_due" {
 			p.Buttons = append(p.Buttons, [3]string{base + "recover", "Update card & pay now", "pay"})
 		} else {
 			p.Buttons = append(p.Buttons, [3]string{base + "fail-payment", "Simulate failed renewal", "alt"})
 		}
-		if !s.CancelAtPeriodEnd {
+		if !s.CancelAtPeriodEnd && s.CancelAt == 0 {
 			p.Buttons = append(p.Buttons, [3]string{base + "cancel-at-period-end", "Cancel at period end", "alt"})
 		}
 		p.Buttons = append(p.Buttons, [3]string{base + "cancel", "Cancel immediately", "warn"})

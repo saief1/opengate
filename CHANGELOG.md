@@ -5,6 +5,20 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] (v2-dev)
 
+### Stripe hardening (review of docs/stripe-integration-plan.md; verified live in Stripe test mode)
+
+- Meter sync reports fixed, epoch-aligned windows with deterministic identifiers, a compare-and-swap cursor and a
+  DB lease (`job_leases`). A lost response or a second replica can no longer double-bill (B1). New `billing.stripe.window`.
+- No duplicate subscriptions: one open Checkout per org (reused or expired), idempotency keys, adoption of a missed
+  subscription, cancellation of incomplete and duplicate subscriptions (A1).
+- `Stripe-Version: 2026-09-30.endive` pinned on every request (`api_version` override) (A2).
+- `charge.dispute.*`, `charge.refunded`, `radar.early_fraud_warning.created` are audited and alerted. A lost dispute
+  or an early fraud warning suspends paid limits until `POST /admin/api/billing/risk/clear` (A3).
+- Webhooks: a livemode mismatch is rejected (A10), and events are claimed atomically with a unique insert (A12).
+- Portal cancellations that set `cancel_at` (current API) are recognized. `cloud.stripe.portal_configuration`.
+- 14-day Team trial without a card (`trial_days`, `trial_without_card`), first subscription per org only.
+- Migration v7: `org_billing.checkout_session_id/checkout_plan/risk_status/risk_detail`, `stripe_events.state`, `job_leases`.
+
 ### Added: OpenGate Cloud (hosted, multi-tenant mode)
 - `cloud:` config. Self-serve sign-up (per-IP throttle) and a plan catalog (Free / Team / Enterprise drafts) with monthly
   request quotas, seat, project and orgs-per-user limits, and per-plan log retention.

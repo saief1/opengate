@@ -71,6 +71,12 @@ func LiveStatus(status string) bool {
 	return false
 }
 
+// Blocking reports whether a subscription in this status means the org is
+// already subscribed, so a new Checkout must not be opened. "incomplete"
+// (first payment failed or awaiting authentication) is not blocking: the
+// caller cancels it before opening a new Checkout.
+func Blocking(status string) bool { return LiveStatus(status) && status != "incomplete" }
+
 // currentStatus reports whether the org's recorded subscription is in force.
 func currentStatus(status string) bool {
 	return status == "active" || status == "trialing" || status == "past_due"
@@ -99,7 +105,7 @@ func ApplySubscription(cc *config.CloudConfig, b *store.OrgBilling, sub *Subscri
 	b.StripeCustomerID = string(sub.Customer)
 	b.Status = sub.Status
 	b.CurrentPeriodEnd = sub.PeriodEnd()
-	b.CancelAtPeriodEnd = sub.CancelAtPeriodEnd
+	b.CancelAtPeriodEnd = sub.CancelScheduled()
 	switch {
 	case sub.Status == "past_due":
 		if b.PastDueSince.IsZero() {

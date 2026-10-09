@@ -1,10 +1,26 @@
 # OpenGate Cloud: Stripe integration plan (Payments, Billing, Connect, Invoicing)
 
-Status: **draft plan, nothing implemented and nothing created in Stripe.** Written 2026-10-09 on `v2-dev`.
+Status: plan written 2026-10-09 on `v2-dev`. **Decisions approved by Saief on 2026-10-09** (below). Phase 0/1 fixes
+B1, A1, A2, A3, A10 and A12 are **implemented** and were run end to end against the Stripe sandbox `acct_1UOmINK91DirmFuM`
+(test mode); see [stripe-test-setup.md](stripe-test-setup.md). Everything else is still a plan.
 Inputs: the Stripe implementation planner (guide `iguide_61VYAHSe1RVP0yYBR41GpvdUG1rIZ`, test account
 `acct_1UCreIGpvdUG1rIZ`, accepted path: hosted Checkout subscriptions + Customer Portal on Accounts v2),
 Stripe's best-practices and Connect guidance, and Stripe docs searches. Items marked **(verify)** need a
 test-mode check or a word with Stripe before we build on them.
+
+## Decisions (approved by Saief, 2026-10-09)
+
+| # | Decision | Effect on this plan |
+| --- | --- | --- |
+| D1 | **Keep v1 Customers for launch**; migrate to Accounts v2 **before Connect** (Phase 5). | §1.2 / A4: Phase 1-4 use `customer=cus_...`. The Accounts v2 migration (one `v2/core/account` per org with `customer` + `merchant` configurations, `customer_account` everywhere) becomes the first task of Phase 5. Keep `stripe_customer_id` as the migration key. |
+| D2 | **Overage via Billing Meters** (not Metronome). | §5: meter `opengate_overage_cents` + metered price as a second subscription item; hourly fixed-window reporting with the B1 deterministic identifiers. |
+| D3 | **Credit ledger inside OpenGate.** | §4: option 3. Checkout `mode=payment` funds an `org_credits` ledger; Stripe credit grants and Metronome are out. |
+| D4 | **Connect earns via the plan fee only** (no application fee) initially. | §6: no `application_fee_*` and no Platform Pricing Tool at launch. Founders pay their OpenGate plan; Stripe fees are theirs (`fees_collector=stripe`). Revisit after launch. |
+| D5 | **Team trial: 14 days, no card required.** | Implemented: `cloud.stripe.trial_days: 14`, `trial_without_card: true`, which sends `subscription_data[trial_period_days]=14`, `payment_method_collection=if_required`, `subscription_data[trial_settings][end_behavior][missing_payment_method]=cancel`. Only an org's first subscription gets a trial. When the trial ends without a card, the subscription is canceled and the org returns to Free. `customer.subscription.trial_will_end` is forwarded (a reminder email is a later task). |
+| D6 | **Enterprise payments (Canadian entity): cards, Canadian PAD (`acss_debit`), or manually recorded wires** (`paid_out_of_band`). | §3: no US ACH or virtual bank accounts, and no US entity for now. Turn on PAD in Payment methods settings. Record wires with `POST /v1/invoices/{id}/pay?paid_out_of_band=true` and a reconciliation note. Use a per-plan grace period of ~30 days for net 30. |
+
+These answer open decisions 1-5 and 7 in §11. Still open: 6 (onboarding for founders with an existing Stripe account)
+and 8 (Managed Payments vs. Stripe Tax).
 
 Business context: OpenGate Inc. is Canada-based, sells to businesses on the web, globally, in USD.
 
@@ -224,7 +240,7 @@ rollover). Optionally add an IP allowlist of Stripe's webhook IPs. Turn on failu
    localhost:8080/cloud/stripe/webhook`, or keep the built-in `opengate mock-stripe`.
 8. Restricted keys (test first, mirror in live):
    - `opengate-cloud-billing`: Customers or Accounts v2 customer config **write**; Checkout Sessions **write**;
-     Customer portal **write**; Subscriptions **read** (write only if we cancel duplicates server-side);
+     Customer portal **write**; Subscriptions **write** (OpenGate cancels duplicate/incomplete subscriptions); Charges + Disputes **read** (risk events);
      Invoices **read**; Prices/Products **read**; Credit notes/Refunds **none** (handled in the Dashboard).
    - `opengate-cloud-usage` (overage/credits): Billing meter events **write**; Billing meters **read**;
      Credit grants **write** (if used).
@@ -290,18 +306,18 @@ gap that should be fixed before go-live; **Low** = hardening/hygiene; **Info** =
 
 | # | Sev | Finding | Fix |
 | --- | --- | --- | --- |
-| A1 | **High** | **Double subscription.** The 409 guard only checks the *stored* subscription. An owner who opens Checkout twice (two tabs, or back-and-retry) gets two live Sessions and can pay both. `ApplySubscription` accepts the newer one and the older one keeps billing, which charges the customer twice. Checkout Session create has no idempotency key. | Store the open Session ID per org and expire it before creating another. Add an idempotency key per checkout attempt. In the webhook, if a second live subscription appears for a customer that already has one, alert and cancel/refund it. Test it with the mock. |
-| A2 | Medium | **No API version pin.** No `Stripe-Version` header, so behaviour follows the account default and changes on upgrade (the code already works around `current_period_end` moving). | Pin `2026-09-30.endive` in `do()`, and use the same version on the webhook endpoint. Add a config override. |
-| A3 | Medium | **Risk events not handled:** `charge.dispute.created/closed`, `charge.refunded`, `radar.early_fraud_warning.created`. Stripe treats these as required for a production subscription integration. | Handle them: audit log, alert the operator, optionally suspend the org on a lost dispute. Add them to the endpoint subscription list in `docs/cloud.md`. |
-| A4 | Medium | **v1 Customers instead of Accounts v2.** Founder orgs will also become Connect accounts (Phase 5). Stripe guidance is one Account with `customer` + `merchant` configurations, not a separate Customer. | Decide now (open decision 2). If adopted, create an `Account` with `configuration.customer` and pass `customer_account` everywhere. Keep `stripe_customer_id` as a migration column. |
+| A1 | **High** ✅ fixed | **Double subscription.** The 409 guard only checks the *stored* subscription. An owner who opens Checkout twice (two tabs, or back-and-retry) gets two live Sessions and can pay both. `ApplySubscription` accepts the newer one and the older one keeps billing, which charges the customer twice. Checkout Session create has no idempotency key. | Store the open Session ID per org and expire it before creating another. Add an idempotency key per checkout attempt. In the webhook, if a second live subscription appears for a customer that already has one, alert and cancel/refund it. Test it with the mock. |
+| A2 | Medium ✅ fixed | **No API version pin.** No `Stripe-Version` header, so behaviour follows the account default and changes on upgrade (the code already works around `current_period_end` moving). | Pin `2026-09-30.endive` in `do()`, and use the same version on the webhook endpoint. Add a config override. |
+| A3 | Medium ✅ fixed | **Risk events not handled:** `charge.dispute.created/closed`, `charge.refunded`, `radar.early_fraud_warning.created`. Stripe treats these as required for a production subscription integration. | Handle them: audit log, alert the operator, optionally suspend the org on a lost dispute. Add them to the endpoint subscription list in `docs/cloud.md`. |
+| A4 | Medium (deferred, D1) | **v1 Customers instead of Accounts v2.** Founder orgs will also become Connect accounts (Phase 5). Stripe guidance is one Account with `customer` + `merchant` configurations, not a separate Customer. | Decide now (open decision 2). If adopted, create an `Account` with `configuration.customer` and pass `customer_account` everywhere. Keep `stripe_customer_id` as a migration column. |
 | A5 | Medium | **Enterprise can't be linked to Stripe.** `PlanForPrice` only knows configured self-serve prices, and Enterprise has no `stripe_price_id`. Quote/invoice subscriptions created by sales are ignored (or mapped only by customer). The operator path is a manual `billing/plan` override with no Stripe link. A single global `grace_period` (default 7d) would downgrade net-30 customers whose wire is late. | Allow several price IDs per plan (incl. `contact_sales` plans). Add an operator API to bind `cus_/acct_` → org. Add a per-plan `grace_period`. Treat `send_invoice` subscriptions with open, not-overdue invoices as in good standing. |
 | A6 | Medium | **Quota period ≠ billing period.** `org_usage` is per calendar month UTC; Stripe bills from the subscription anchor. That's fine for flat quotas, wrong for overage (Phase 4). | Key usage by `current_period_start` of the live subscription (fall back to the calendar month for Free). |
 | A7 | Low | `tax_id_collection` is only sent when `automatic_tax` is on. B2B buyers want tax IDs on invoices either way. `automatic_tax` can be switched on with no registration (it silently collects nothing). | Always send `tax_id_collection[enabled]=true`. Add a docs/config warning, or a startup check that a registration exists via the Tax Registrations API (read). |
 | A8 | Low | No `subscription_data[billing_mode][type]=flexible` and no `integration_identifier`. | Add both (after confirming the defaults on the pinned version). |
-| A9 | Low | Portal sessions use the Dashboard default configuration. | Create a portal configuration via API (§2) and pass `configuration`. Restrict switching to Team prices. |
-| A10 | Low | `event.livemode` is parsed but not checked. | Reject events whose `livemode` differs from the key mode (`sk_live`/`rk_live` vs. `_test`). |
+| A9 | Low ✅ fixed | Portal sessions use the Dashboard default configuration. | Create a portal configuration via API (§2) and pass `configuration`. Restrict switching to Team prices. |
+| A10 | Low ✅ fixed | `event.livemode` is parsed but not checked. | Reject events whose `livemode` differs from the key mode (`sk_live`/`rk_live` vs. `_test`). |
 | A11 | Low | Single webhook secret, so it can't rotate without downtime. | Accept a comma-separated `STRIPE_WEBHOOK_SECRET` list (Stripe signs with all active secrets during rollover). |
-| A12 | Low | Dedupe is check-then-mark (not atomic), so two concurrent duplicate deliveries can both process. Harmless today (the handlers are idempotent re-fetches), but it would double-grant credits in Phase 3. | Insert the event ID first (`INSERT … ON CONFLICT DO NOTHING`, and process only if a row was inserted). Delete it on failure so Stripe's retry reprocesses. |
+| A12 | Low ✅ fixed | Dedupe is check-then-mark (not atomic), so two concurrent duplicate deliveries can both process. Harmless today (the handlers are idempotent re-fetches), but it would double-grant credits in Phase 3. | Insert the event ID first (`INSERT … ON CONFLICT DO NOTHING`, and process only if a row was inserted). Delete it on failure so Stripe's retry reprocesses. |
 | A13 | Low | One `STRIPE_API_KEY` env var feeds both cloud billing and meter sync. The docs say "secret key". | Recommend `rk_` keys with the §8 permissions, and separate env vars per job (`STRIPE_BILLING_KEY`, `STRIPE_USAGE_KEY`). |
 | A14 | Low | No retry/backoff on 429/5xx or network errors for Stripe API calls. | Retry with jitter only for requests with idempotency keys. Surface a clear error otherwise. |
 | A15 | Low | The customer idempotency key `opengate-customer-<org>` is reused forever. Within 24h, different params (for example a different owner email) return an idempotency error. | Include a per-attempt nonce, and rely on the stored `stripe_customer_id` to avoid duplicates. |
@@ -312,11 +328,11 @@ gap that should be fixed before go-live; **Low** = hardening/hygiene; **Info** =
 
 | # | Sev | Finding | Fix |
 | --- | --- | --- | --- |
-| B1 | **High** | **A timeout can double-bill end customers.** The meter event `identifier` (and Idempotency-Key) is a hash of the window `[synced_to, end]`, and `end = now - lag` moves on every run. If Stripe accepts an event but the response is lost (timeout/5xx), the cursor doesn't advance. The next run sends a *different* identifier for an overlapping, larger window, so Stripe counts the usage twice. Two instances running the sync (multi-instance Postgres) hit the same problem because each computes its own `end`. | Persist a pending window (`from`, `end`, `identifier`) before sending, and resend exactly that window until it's acknowledged; only then start the next one. Or use fixed buckets (for example hourly `[h, h+1)`, identifier = hash(project, customer, h)) so every retry and every instance produces the same identifier. Guard the job with a DB lease for multi-instance. |
+| B1 | **High** ✅ fixed | **A timeout can double-bill end customers.** The meter event `identifier` (and Idempotency-Key) is a hash of the window `[synced_to, end]`, and `end = now - lag` moves on every run. If Stripe accepts an event but the response is lost (timeout/5xx), the cursor doesn't advance. The next run sends a *different* identifier for an overlapping, larger window, so Stripe counts the usage twice. Two instances running the sync (multi-instance Postgres) hit the same problem because each computes its own `end`. | Persist a pending window (`from`, `end`, `identifier`) before sending, and resend exactly that window until it's acknowledged; only then start the next one. Or use fixed buckets (for example hourly `[h, h+1)`, identifier = hash(project, customer, h)) so every retry and every instance produces the same identifier. Guard the job with a DB lease for multi-instance. |
 | B2 | Medium | **Stale windows fail forever.** Stripe rejects meter events older than ~35 days. A customer whose sync has been failing that long never catches up and gets no alert. | Alert on `last_error` age. Cap the window at the oldest acceptable timestamp and report or record the gap. Handle `billing.meter.error_report_triggered`. |
 | B3 | Medium | **Only works for the operator's own Stripe account.** No `Stripe-Account` header and one global key. Phase 5 needs per-org connected accounts (and the cloud-mode guard currently forbids meter sync). | Add `stripe_account` per org/project. Send `Stripe-Account: acct_…` with the platform key. Relax the cloud guard only for orgs with a verified connected account. Map the founder's end customers to `cus_` IDs *on their account*. |
-| B4 | Low | Duplicate detection matches English error text (`"identifier" … "already"`). | Match on the error `code`. Don't treat other 400s as success. |
-| B5 | Low | No API version pin or retry/backoff, and errors don't separate retryable (429/5xx) from permanent (400 unknown customer / meter inactive). | Same client hardening as A2/A14. Mark permanent failures so they stop retrying and alert. |
+| B4 | Low ◐ partly | Duplicate detection matches English error text (`"identifier" … "already"`). | Match on the error `code`. Don't treat other 400s as success. |
+| B5 | Low ◐ partly | No API version pin or retry/backoff, and errors don't separate retryable (429/5xx) from permanent (400 unknown customer / meter inactive). | Same client hardening as A2/A14. Mark permanent failures so they stop retrying and alert. |
 | B6 | Low | `customer_mapping` payload key is hard-coded to `stripe_customer_id`. | Make it configurable to match the meter definition (and `customer_account` mapping under Accounts v2). |
 | B7 | Info | Sync is one event per customer per interval (good: aggregated, well under rate limits). The first sync waits a full interval after boot. | Optionally sync once on start. |
 
@@ -330,3 +346,26 @@ gap that should be fixed before go-live; **Low** = hardening/hygiene; **Info** =
 
 **Fix order:** B1 and A1 (money correctness), then A2, A3, A10, A12 (cheap hardening), then A4/A5 with the
 Accounts v2 and Enterprise decisions, and the rest with their phases.
+
+### Implementation status (2026-10-09)
+
+- **B1:** usage is reported in fixed, epoch-aligned windows (`billing.stripe.window`, default 1h). The identifier is
+  sha256(project, customer, from, to), which is the same on every retry and every replica. The cursor advances by
+  compare-and-swap, and a `job_leases` DB lease makes one replica the writer. Tests: lost-response retry (no double count),
+  two concurrent replicas with skewed clocks, and window math.
+- **A1:** one open Checkout Session per org (`org_billing.checkout_session_id/plan`). It is reused on a second click,
+  expired on a plan switch, and expired once the org is subscribed. Idempotency keys are derived from the request
+  state. Before creating a session, the customer's subscriptions are listed: a live one is adopted (409), and an
+  `incomplete` one is canceled. A second live subscription arriving by webhook is **canceled** (audit + alert), and
+  events for non-current subscriptions are ignored. Mock + live tests.
+- **A2:** `Stripe-Version: 2026-09-30.endive` on every call (cloud client and meter sync), overridable with `api_version`.
+- **A3:** disputes, refunds and early fraud warnings are audited and alerted. An open dispute flags the org. A lost
+  dispute or an early fraud warning suspends paid limits until `POST /admin/api/billing/risk/clear` (operator). A won
+  dispute clears its own flag. The dashboard shows a banner.
+- **A9:** the portal configuration `bpc_...` is passed (`cloud.stripe.portal_configuration`).
+- **A10:** events whose livemode differs from the key mode get 400. **A12:** a unique-insert claim (`processing` → `done`),
+  released on failure, with stale-claim takeover after 5 minutes.
+- **Found in the live run:** on 2026-09-30, portal "cancel at period end" sets `cancel_at`, not `cancel_at_period_end`.
+  It is now handled, and the mock behaves the same way.
+- B4/B5: duplicates are matched on `code=resource_already_exists` first (English text kept as a fallback), and the
+  version is pinned. Retry/backoff and permanent-error classification are still open.

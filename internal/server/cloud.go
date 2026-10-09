@@ -261,7 +261,7 @@ func (s *Server) cloudCheckout(w http.ResponseWriter, r *http.Request) {
 		storeErr(w, err)
 		return
 	}
-	if b.StripeSubscriptionID != "" && cloud.LiveStatus(b.Status) {
+	if b.StripeSubscriptionID != "" && cloud.Blocking(b.Status) {
 		writeError(w, http.StatusConflict, "invalid_request_error", "subscription_exists", "This organization already has a subscription; change or cancel it in the billing portal.")
 		return
 	}
@@ -296,7 +296,17 @@ func (s *Server) cloudCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, sub := range subs {
-		if cloud.LiveStatus(sub.Status) {
+		if sub.Status == "incomplete" {
+			// A first payment that failed: cancel it so it can't complete
+			// later next to the new subscription.
+			if _, err := s.cloud.stripe.CancelSubscription(r.Context(), sub.ID, "og-cancel-incomplete-"+sub.ID); err != nil {
+				s.stripeFail(w, "cancel incomplete subscription", err)
+				return
+			}
+			s.audit(r, "billing.subscription.incomplete_canceled", org, map[string]string{"subscription": sub.ID})
+			continue
+		}
+		if cloud.Blocking(sub.Status) {
 			if err := s.applySubscription(r.Context(), "checkout", sub, org); err != nil {
 				s.log.Warn("adopt existing subscription", "org_id", org, "err", err)
 			}
@@ -623,7 +633,7 @@ func (s *Server) applySubscription(ctx context.Context, source string, sub *clou
 	case cloud.Duplicate:
 		return s.cancelDuplicate(ctx, source, b, sub)
 	}
-	if cloud.LiveStatus(b.Status) && b.CheckoutSessionID != "" {
+	if cloud.Blocking(b.Status) && b.CheckoutSessionID != "" {
 		// The org is subscribed now: any other open Checkout could only create
 		// a duplicate, so close it.
 		if err := s.cloud.stripe.ExpireCheckoutSession(ctx, b.CheckoutSessionID); err != nil {

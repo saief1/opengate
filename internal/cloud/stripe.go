@@ -298,13 +298,17 @@ func (s *Stripe) CreatePortalSession(ctx context.Context, customerID, returnURL,
 // Newer API versions moved current_period_end onto the subscription items;
 // PeriodEnd handles both.
 type Subscription struct {
-	ID                string            `json:"id"`
-	Customer          ID                `json:"customer"`
-	Status            string            `json:"status"`
-	CancelAtPeriodEnd bool              `json:"cancel_at_period_end"`
-	CurrentPeriodEnd  int64             `json:"current_period_end"`
-	Metadata          map[string]string `json:"metadata"`
-	Items             struct {
+	ID                string `json:"id"`
+	Customer          ID     `json:"customer"`
+	Status            string `json:"status"`
+	CancelAtPeriodEnd bool   `json:"cancel_at_period_end"`
+	// CancelAt is a scheduled cancellation time. On current API versions
+	// the Customer Portal's "cancel at period end" sets cancel_at (to the
+	// period end) and leaves cancel_at_period_end false.
+	CancelAt         int64             `json:"cancel_at"`
+	CurrentPeriodEnd int64             `json:"current_period_end"`
+	Metadata         map[string]string `json:"metadata"`
+	Items            struct {
 		Data []struct {
 			CurrentPeriodEnd int64 `json:"current_period_end"`
 			Price            struct {
@@ -313,6 +317,9 @@ type Subscription struct {
 		} `json:"data"`
 	} `json:"items"`
 }
+
+// CancelScheduled reports whether the subscription will end on its own.
+func (s *Subscription) CancelScheduled() bool { return s.CancelAtPeriodEnd || s.CancelAt > 0 }
 
 // PriceID returns the first item's price.
 func (s *Subscription) PriceID() string {
