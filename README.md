@@ -210,7 +210,7 @@ Every endpoint needs `Authorization: Bearer $OPENGATE_ADMIN_TOKEN`.
 * **Privacy:** prompt and response bodies are **not stored** unless a project turns on body logging (and then they're truncated).
   Metadata (model, tokens, cost, latency, status, key and agent) is always logged.
 * **Network:** the gateway binds to localhost by default. For remote access, terminate TLS in a reverse proxy.
-* **Supply chain:** two direct dependencies, both pure Go, pinned in `go.sum`. Builds are reproducible with `-trimpath`. Read `go.mod`
+* **Supply chain:** two direct dependencies, both pure Go, pinned in `go.sum`, and builds use `-trimpath`. Read `go.mod`
   and audit it in an afternoon.
 
 See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.

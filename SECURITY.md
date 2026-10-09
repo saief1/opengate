@@ -5,7 +5,7 @@ OpenGate holds credentials for every model provider you use, so we treat securit
 ## Reporting a vulnerability
 
 Please **do not open public issues for security problems.** Instead, report them privately through
-GitHub's "Report a vulnerability" (Security Advisories) on this repository, or email security@opengate.dev.
+GitHub's "Report a vulnerability" (Security Advisories) on this repository, or email the maintainers at the security contact listed on the project page (placeholder: set before publishing).
 Include steps to reproduce, the affected version (`opengate version`) and the impact.
 
 We aim to acknowledge reports within 2 business days and to ship a fix or mitigation for confirmed
