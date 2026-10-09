@@ -46,6 +46,7 @@ func (s *Server) registerAdmin(mux *http.ServeMux) {
 	h("POST /admin/api/pricing/reload", s.adminReloadPricing)
 	s.registerAdminPhase2(h)
 	s.registerAuth(mux, h)
+	s.registerCloud(mux, h)
 	mux.Handle("/admin/", s.adminAuth("GET /admin/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "invalid_request_error", "not_found", "unknown admin endpoint")
 	}))
@@ -184,6 +185,9 @@ func (s *Server) adminCreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decode(r, &in); err != nil {
 		bad(w, err)
+		return
+	}
+	if !s.planLimit(w, r, orgID(r), "projects") {
 		return
 	}
 	p, err := s.store.CreateProjectInOrg(r.Context(), orgID(r), in.Name, in.LogBodies)

@@ -57,7 +57,7 @@ def r(m, p, tag, summ, role=None, req=None, resp=None, code="200"):
     R.append((m, p, tag, summ, role, req, resp, code))
 
 # Auth (public, then session-carrying)
-r("GET", "/admin/api/auth/config", "Auth", "Login options (signup enabled, etc.)", "public", resp=obj({"allow_signup": b}))
+r("GET", "/admin/api/auth/config", "Auth", "Login options (signup enabled, cloud mode, etc.)", "public", resp=obj({"allow_signup": b, "has_users": b, "cloud": b, "version": s}))
 r("POST", "/admin/api/auth/login", "Auth", "Email + password login; sets the og_session cookie", "public", obj({"email": s, "password": s}, ["email", "password"]), S("Me"))
 r("POST", "/admin/api/auth/logout", "Auth", "Ends the session", "public")
 r("GET", "/admin/api/auth/me", "Auth", "Current principal, role and orgs", "public", resp=S("Me"))
@@ -120,6 +120,15 @@ r("DELETE", "/admin/api/billing/markups/{id}", "Billing", "Delete markup rule")
 r("GET", "/admin/api/billing/export.csv", "Billing", "Monthly usage CSV (?month=YYYY-MM)", resp="csv")
 r("GET", "/admin/api/billing/stripe", "Billing", "Stripe meter sync status")
 r("POST", "/admin/api/billing/stripe/sync", "Billing", "Sync this org's usage to Stripe now", resp=obj({"customers": i, "events": i, "errors": arr(s)}))
+# Cloud (only when cloud.enabled)
+plan = obj({"id": s, "name": s, "price_usd": n, "interval": s, "contact_sales": b, "self_serve": b, "max_requests_month": i,
+            "max_members": i, "max_projects": i, "log_retention_days": i, "features": arr(s)})
+r("GET", "/admin/api/billing", "Cloud", "Plan, subscription status, usage and the plan catalog (cloud mode)", "viewer",
+  resp=obj({"plan": s, "effective_plan": plan, "status": s, "current_period_end": s, "cancel_at_period_end": b, "has_subscription": b,
+            "usage": obj({"period": s, "requests": i, "projects": i, "members": i, "pending_invites": i}), "plans": arr(plan), "sales_url": s, "can_manage": b}))
+r("POST", "/admin/api/billing/checkout", "Cloud", "Start Stripe Checkout for a plan (owner)", "owner", obj({"plan": s}, ["plan"]), obj({"url": s, "id": s}))
+r("POST", "/admin/api/billing/portal", "Cloud", "Open the Stripe Customer Portal (owner)", "owner", resp=obj({"url": s}))
+r("PUT", "/admin/api/billing/plan", "Cloud", "Assign a plan by hand (operator admin token only; e.g. Enterprise)", "admin token", obj({"plan": s}, ["plan"]))
 # Team
 r("GET", "/admin/api/orgs", "Team", "Orgs the caller belongs to", resp=listOf(S("Org")))
 r("POST", "/admin/api/orgs", "Team", "Create an org (caller becomes owner)", None, obj({"name": s}, ["name"]), S("Org"), "201")

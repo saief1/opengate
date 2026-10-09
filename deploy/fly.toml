@@ -1,0 +1,39 @@
+# Fly.io: fly launch --no-deploy --copy-config -c deploy/fly.toml
+#   fly postgres create && fly postgres attach <pg-app>       # sets DATABASE_URL
+#   fly secrets set OPENGATE_DATABASE="$DATABASE_URL" OPENGATE_ADMIN_TOKEN=... OPENGATE_MASTER_KEY=... \
+#       OPENGATE_PUBLIC_URL=https://<app>.fly.dev STRIPE_API_KEY=... STRIPE_WEBHOOK_SECRET=... STRIPE_PRICE_TEAM=...
+#   fly deploy -c deploy/fly.toml
+app = "opengate-cloud"            # TODO: your app name
+primary_region = "iad"
+
+[build]
+  dockerfile = "../Dockerfile"
+
+[experimental]
+  cmd = ["serve", "-config", "/etc/opengate/cloud.yaml"]
+
+[[files]]
+  guest_path = "/etc/opengate/cloud.yaml"
+  local_path = "deploy/cloud.yaml"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"      # background jobs (retention, kill sweeps) must keep running
+  min_machines_running = 1
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 400
+    hard_limit = 512
+
+[[http_service.checks]]
+  path = "/readyz"
+  interval = "15s"
+  timeout = "3s"
+  grace_period = "10s"
+
+# Exact spend limits need a single replica (budget reservations are
+# per-process; see docs/security-model.md). Scale up, not out, until then.
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "1gb"

@@ -377,6 +377,31 @@ var migrations = []migration{
 		`ALTER TABLE projects ADD COLUMN trust_customer_header INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE virtual_keys ADD COLUMN customer_id TEXT NOT NULL DEFAULT ''`,
 	}},
+	{6, "cloud: org plans and subscriptions, monthly usage counters, Stripe webhook idempotency", []string{
+		`CREATE TABLE IF NOT EXISTS org_billing (
+  org_id TEXT PRIMARY KEY REFERENCES orgs(id),
+  plan TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  stripe_customer_id TEXT NOT NULL DEFAULT '',
+  stripe_subscription_id TEXT NOT NULL DEFAULT '',
+  current_period_end BIGINT NOT NULL DEFAULT 0,
+  cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
+  past_due_since BIGINT NOT NULL DEFAULT 0,
+  updated_at BIGINT NOT NULL
+)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_org_billing_customer ON org_billing(stripe_customer_id) WHERE stripe_customer_id <> ''`,
+		`CREATE TABLE IF NOT EXISTS org_usage (
+  org_id TEXT NOT NULL,
+  period TEXT NOT NULL,
+  requests BIGINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (org_id, period)
+)`,
+		`CREATE TABLE IF NOT EXISTS stripe_events (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  received_at BIGINT NOT NULL
+)`,
+	}},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

@@ -23,6 +23,7 @@ import (
 	"github.com/opengate-dev/opengate/internal/secure"
 	"github.com/opengate-dev/opengate/internal/server"
 	"github.com/opengate-dev/opengate/internal/store"
+	"github.com/opengate-dev/opengate/internal/stripemock"
 	"github.com/opengate-dev/opengate/web"
 )
 
@@ -38,12 +39,16 @@ Usage:
                                              OPENGATE_NEW_PASSWORD or stdin)
   opengate pricing                           print the built-in price table (YAML)
   opengate mock-provider [-listen :9090]     run a fake OpenAI/Anthropic/Gemini upstream (dev/demo)
+  opengate mock-stripe [-listen :12111] -webhook URL
+                                             run a fake Stripe (Checkout, portal, signed webhooks)
+                                             for testing OpenGate Cloud billing (dev/demo)
   opengate demo-seed [-days 30] [-config ...] insert synthetic historical traffic (demo only)
   opengate healthcheck                       exit 0 if the local gateway answers /healthz (for containers)
   opengate version
 
 Environment: OPENGATE_CONFIG, OPENGATE_ADMIN_TOKEN, OPENGATE_MASTER_KEY, OPENGATE_LISTEN,
-OPENGATE_DATABASE, OPENGATE_PRICING_FILE, OPENGATE_ALERT_WEBHOOK_URL, <PROVIDER>_API_KEY.
+OPENGATE_DATABASE, OPENGATE_PRICING_FILE, OPENGATE_ALERT_WEBHOOK_URL, <PROVIDER>_API_KEY,
+OPENGATE_PUBLIC_URL, STRIPE_API_KEY, STRIPE_WEBHOOK_SECRET (cloud mode).
 `
 
 func main() {
@@ -66,6 +71,8 @@ func main() {
 		_, err = os.Stdout.Write(pricing.DefaultYAML)
 	case "mock-provider":
 		err = mock(args)
+	case "mock-stripe":
+		err = mockStripe(args)
 	case "demo-seed":
 		err = demoSeed(args)
 	case "healthcheck":
@@ -282,6 +289,24 @@ func mock(args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "mock provider on http://%s  (base URLs: /openai/v1, /openrouter/v1, /anthropic, /gemini)\n", *listen)
 	hs := &http.Server{Addr: *listen, Handler: mockprovider.New(mockprovider.Options{Jitter: *jitter, ChunkDelay: 15 * time.Millisecond}), ReadHeaderTimeout: 10 * time.Second}
+	return hs.ListenAndServe()
+}
+
+func mockStripe(args []string) error {
+	fs := flag.NewFlagSet("mock-stripe", flag.ExitOnError)
+	listen := fs.String("listen", "127.0.0.1:12111", "listen address")
+	webhook := fs.String("webhook", "http://127.0.0.1:8080/cloud/stripe/webhook", "OpenGate webhook URL to deliver events to")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	secret := os.Getenv("STRIPE_WEBHOOK_SECRET")
+	if secret == "" {
+		return fmt.Errorf("set STRIPE_WEBHOOK_SECRET (any whsec_... value, the same one OpenGate uses)")
+	}
+	m := stripemock.New("http://"+*listen, *webhook, secret)
+	m.APIKey = os.Getenv("STRIPE_API_KEY")
+	fmt.Fprintf(os.Stderr, "mock Stripe on http://%s  (set cloud.stripe.base_url to it; events -> %s)\n", *listen, *webhook)
+	hs := &http.Server{Addr: *listen, Handler: m.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	return hs.ListenAndServe()
 }
 

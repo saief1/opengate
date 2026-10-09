@@ -3,7 +3,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X github.com/opengate-dev/opengate/internal/server.Version=$(VERSION)
 export CGO_ENABLED=0
 
-.PHONY: build test test-race test-postgres test-integration vet fmt run mock demo docker clean zip
+.PHONY: build test test-race test-postgres test-integration vet fmt run mock demo cloud-demo docker clean zip
 
 build: ## Build a static binary into ./bin
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/opengate
@@ -38,6 +38,9 @@ mock: build ## Run the mock upstream provider on :9090
 
 demo: build ## Mock provider + gateway + seeded demo traffic (no real keys needed)
 	./scripts/demo.sh
+
+cloud-demo: build ## OpenGate Cloud: signup, plans and Stripe Checkout against a mock Stripe
+	./scripts/cloud-demo.sh
 
 docker:
 	docker build -t opengate:$(VERSION) --build-arg VERSION=$(VERSION) .

@@ -136,3 +136,23 @@ textarea { width: 100%; min-height: 90px; resize: vertical; }
 .saved-text { color: #3fd69f; }
 .redacted { white-space: pre-wrap; }
 .mr { margin-right: 4px; } .w110 { width: 110px; }
+
+/* cloud: plan & billing */
+.stats.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.stat .value .of { font-size: 14px; color: var(--muted); font-weight: 500; letter-spacing: 0; }
+.stat .bar { margin-top: 8px; }
+.banner { background: var(--panel2); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px; margin-bottom: 16px; color: var(--text); }
+.banner.warn { border-color: rgba(245,158,11,.5); background: rgba(245,158,11,.08); color: #fcd34d; }
+.plans { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.plan { display: flex; flex-direction: column; gap: 12px; }
+.plan.current { border-color: rgba(7,154,106,.6); box-shadow: 0 0 0 1px rgba(7,154,106,.25) inset; }
+.plan-head { display: flex; align-items: center; justify-content: space-between; }
+.plan h3 { margin: 0; font-size: 17px; }
+.plan .price { font-size: 30px; font-weight: 700; letter-spacing: -.5px; }
+.plan .price small { font-size: 13px; color: var(--muted); font-weight: 500; }
+.plan .features { list-style: none; padding: 0; margin: 0 0 4px; display: grid; gap: 7px; color: var(--muted); flex: 1; }
+.plan .features li::before { content: "✓"; color: var(--accent2); margin-right: 8px; font-weight: 700; }
+.plan .btn { width: 100%; text-align: center; justify-content: center; }
+@media (max-width: 1100px) { .plans, .stats.four { grid-template-columns: 1fr; } }
+a.btn { display: inline-block; text-decoration: none; }
+.plan .features { align-content: start; }

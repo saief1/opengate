@@ -1,0 +1,51 @@
+# OpenGate Cloud: production configuration template.
+# Secrets never go in this file; they come from the environment:
+#   OPENGATE_ADMIN_TOKEN, OPENGATE_MASTER_KEY, OPENGATE_DATABASE (postgres://...),
+#   OPENGATE_PUBLIC_URL, STRIPE_API_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PRICE_TEAM.
+# See docs/cloud.md for the Stripe setup and the go-live checklist.
+listen: 0.0.0.0:8080
+# Behind the platform's load balancer / reverse proxy (private ranges only).
+trusted_proxies: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, fc00::/7]
+max_inflight: 512
+budgets:
+  strict: true            # unknown models are refused instead of priced at $0
+rate_limit:
+  backend: database
+admin_lockout: {max_failures: 10, window: 5m, lockout: 15m}
+log: {level: info, format: json}
+auth:
+  session_ttl: 12h
+  session_max_age: 168h
+cloud:
+  enabled: true
+  # public_url comes from OPENGATE_PUBLIC_URL (e.g. https://cloud.example.com)
+  default_plan: free
+  max_orgs_per_user: 3
+  grace_period: 168h      # past_due keeps paid limits while Stripe retries
+  sales_url: "mailto:sales@example.com"   # TODO: real sales address
+  stripe:
+    trial_days: 0
+    allow_promotion_codes: true
+    automatic_tax: false  # enable once Stripe Tax is configured
+  plans:                  # DRAFT pricing; limits of 0 = unlimited
+    - id: free
+      name: Free
+      max_requests_month: 10000
+      max_members: 3
+      max_projects: 2
+      log_retention_days: 7
+      features: ["10k requests / month", "3 team members", "2 projects", "7-day request logs"]
+    - id: team
+      name: Team
+      price_usd: 49
+      interval: month
+      stripe_price_id: ${STRIPE_PRICE_TEAM}
+      max_requests_month: 1000000
+      max_members: 25
+      log_retention_days: 30
+      features: ["1M requests / month", "25 team members", "Unlimited projects", "30-day request logs", "Email support"]
+    - id: enterprise
+      name: Enterprise
+      contact_sales: true
+      log_retention_days: 365
+      features: ["Unlimited requests", "SSO & custom contracts", "1-year request logs", "Priority support"]

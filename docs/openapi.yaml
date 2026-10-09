@@ -22,13 +22,14 @@ tags:
   - name: "Routing"
   - name: "Cache"
   - name: "Billing"
+  - name: "Cloud"
   - name: "Team"
 paths:
   /admin/api/auth/config:
     get:
       tags:
         - "Auth"
-      summary: "Login options (signup enabled, etc.)"
+      summary: "Login options (signup enabled, cloud mode, etc.)"
       operationId: "get_auth_config"
       security:
         - {}
@@ -43,6 +44,12 @@ paths:
                 properties:
                   allow_signup:
                     type: "boolean"
+                  has_users:
+                    type: "boolean"
+                  cloud:
+                    type: "boolean"
+                  version:
+                    type: "string"
         "400":
           description: "Error"
           content:
@@ -2368,6 +2375,268 @@ paths:
                     type: "array"
                     items:
                       type: "string"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/api/billing:
+    get:
+      tags:
+        - "Cloud"
+      summary: "Plan, subscription status, usage and the plan catalog (cloud mode)"
+      operationId: "get_billing"
+      x-min-role: "viewer"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: "object"
+                properties:
+                  plan:
+                    type: "string"
+                  effective_plan:
+                    type: "object"
+                    properties:
+                      id:
+                        type: "string"
+                      name:
+                        type: "string"
+                      price_usd:
+                        type: "number"
+                      interval:
+                        type: "string"
+                      contact_sales:
+                        type: "boolean"
+                      self_serve:
+                        type: "boolean"
+                      max_requests_month:
+                        type: "integer"
+                      max_members:
+                        type: "integer"
+                      max_projects:
+                        type: "integer"
+                      log_retention_days:
+                        type: "integer"
+                      features:
+                        type: "array"
+                        items:
+                          type: "string"
+                  status:
+                    type: "string"
+                  current_period_end:
+                    type: "string"
+                  cancel_at_period_end:
+                    type: "boolean"
+                  has_subscription:
+                    type: "boolean"
+                  usage:
+                    type: "object"
+                    properties:
+                      period:
+                        type: "string"
+                      requests:
+                        type: "integer"
+                      projects:
+                        type: "integer"
+                      members:
+                        type: "integer"
+                      pending_invites:
+                        type: "integer"
+                  plans:
+                    type: "array"
+                    items:
+                      type: "object"
+                      properties:
+                        id:
+                          type: "string"
+                        name:
+                          type: "string"
+                        price_usd:
+                          type: "number"
+                        interval:
+                          type: "string"
+                        contact_sales:
+                          type: "boolean"
+                        self_serve:
+                          type: "boolean"
+                        max_requests_month:
+                          type: "integer"
+                        max_members:
+                          type: "integer"
+                        max_projects:
+                          type: "integer"
+                        log_retention_days:
+                          type: "integer"
+                        features:
+                          type: "array"
+                          items:
+                            type: "string"
+                  sales_url:
+                    type: "string"
+                  can_manage:
+                    type: "boolean"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/api/billing/checkout:
+    post:
+      tags:
+        - "Cloud"
+      summary: "Start Stripe Checkout for a plan (owner)"
+      operationId: "post_billing_checkout"
+      x-min-role: "owner"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: "object"
+              properties:
+                plan:
+                  type: "string"
+              required:
+                - "plan"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: "object"
+                properties:
+                  url:
+                    type: "string"
+                  id:
+                    type: "string"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/api/billing/portal:
+    post:
+      tags:
+        - "Cloud"
+      summary: "Open the Stripe Customer Portal (owner)"
+      operationId: "post_billing_portal"
+      x-min-role: "owner"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: "object"
+                properties:
+                  url:
+                    type: "string"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/api/billing/plan:
+    put:
+      tags:
+        - "Cloud"
+      summary: "Assign a plan by hand (operator admin token only; e.g. Enterprise)"
+      operationId: "put_billing_plan"
+      x-min-role: "admin token"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: "object"
+              properties:
+                plan:
+                  type: "string"
+              required:
+                - "plan"
+      responses:
+        "200":
+          description: "OK"
         "400":
           description: "Error"
           content:

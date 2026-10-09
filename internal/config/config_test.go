@@ -104,3 +104,57 @@ func TestUpstreamURLMustBeHTTPS(t *testing.T) {
 		}
 	}
 }
+
+func TestCloudConfigValidation(t *testing.T) {
+	base := func() *Config {
+		c := Default()
+		c.Cloud.Enabled = true
+		c.Cloud.PublicURL = "https://cloud.example.com/"
+		return c
+	}
+	c := base()
+	if err := c.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if !c.Auth.AllowSignup || !c.Auth.SecureCookies || c.Cloud.PublicURL != "https://cloud.example.com" || len(c.Cloud.Plans) != 3 {
+		t.Fatalf("cloud defaults: %+v", c.Cloud)
+	}
+	if err := c.ValidateStripe(); err == nil {
+		t.Fatal("missing Stripe secrets accepted")
+	}
+	c.StripeAPIKey, c.StripeWebhookSecret = "sk_test_x", "not-a-whsec"
+	if err := c.ValidateStripe(); err == nil {
+		t.Fatal("bad webhook secret accepted")
+	}
+	c.StripeWebhookSecret = "whsec_x"
+	if err := c.ValidateStripe(); err != nil {
+		t.Fatal(err)
+	}
+	bad := map[string]func(*Config){
+		"no public url":        func(c *Config) { c.Cloud.PublicURL = "" },
+		"http public url":      func(c *Config) { c.Cloud.PublicURL = "http://cloud.example.com" },
+		"shared env keys":      func(c *Config) { c.ShareEnvProviderKeys = true },
+		"operator meter sync":  func(c *Config) { c.Billing.Stripe.Enabled = true },
+		"unknown default plan": func(c *Config) { c.Cloud.DefaultPlan = "gold" },
+		"paid default plan":    func(c *Config) { c.Cloud.Plans = []CloudPlan{{ID: "free", Name: "F", StripePriceID: "price_1"}} },
+		"duplicate plan":       func(c *Config) { c.Cloud.Plans = []CloudPlan{{ID: "free", Name: "F"}, {ID: "free", Name: "G"}} },
+		"shared price": func(c *Config) {
+			c.Cloud.Plans = []CloudPlan{{ID: "free", Name: "F"}, {ID: "a", Name: "A", StripePriceID: "p"}, {ID: "b", Name: "B", StripePriceID: "p"}}
+		},
+		"negative limit":      func(c *Config) { c.Cloud.Plans = []CloudPlan{{ID: "free", Name: "F", MaxMembers: -1}} },
+		"insecure stripe url": func(c *Config) { c.Cloud.Stripe.BaseURL = "http://stripe.evil.example" },
+	}
+	for name, mut := range bad {
+		c := base()
+		mut(c)
+		if err := c.Normalize(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	// Not enabled: nothing is enforced.
+	off := Default()
+	off.ShareEnvProviderKeys = true
+	if err := off.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+}

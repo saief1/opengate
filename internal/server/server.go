@@ -74,6 +74,7 @@ type Server struct {
 	markups      *billing.Markups
 	routingRules *ttlCache[[]*store.RoutingRule]
 	stripe       *billing.Stripe // nil unless billing.stripe.enabled
+	cloud        *cloudState     // nil unless cloud.enabled
 
 	trusted    []*net.IPNet  // trusted_proxies
 	active     atomic.Int64  // requests in the gateway (max_inflight)
@@ -132,6 +133,12 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	s.routingRules = &ttlCache[[]*store.RoutingRule]{ttl: 5 * time.Second, load: func(ctx context.Context) ([]*store.RoutingRule, error) {
 		return o.Store.ListRoutingRules(ctx, "")
 	}}
+	if o.Config.Cloud.Enabled {
+		if err := o.Config.ValidateStripe(); err != nil {
+			return nil, err
+		}
+		s.cloud = newCloudState(o.Config, o.StripeClient)
+	}
 	if o.Config.Billing.Stripe.Enabled {
 		if err := o.Config.ValidateStripe(); err != nil {
 			return nil, err
@@ -162,12 +169,21 @@ func (s *Server) Run(ctx context.Context) {
 	// replica's in-flight streams within one poll interval.
 	kt := time.NewTicker(2 * time.Second)
 	defer kt.Stop()
+	ht := time.NewTicker(time.Hour)
+	defer ht.Stop()
+	if s.cloud != nil {
+		s.pruneCloud(ctx)
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-kt.C:
 			s.SweepKills(ctx)
+		case <-ht.C:
+			if s.cloud != nil {
+				s.pruneCloud(ctx)
+			}
 		case <-t.C:
 			if err := s.store.PruneRateBuckets(ctx, time.Now().Add(-10*time.Minute)); err != nil {
 				s.log.Warn("prune rate buckets", "err", err)

@@ -291,11 +291,13 @@ make demo          # local demo with seeded traffic
 Shipped in 1.0: smart routing, PII and secret guardrails, customer billing with Stripe sync, Postgres, Prometheus,
 RBAC and orgs, embeddings and Responses, atomic budget reservations, model allow-lists. Next:
 
+* **OpenGate Cloud** (in progress on `v2-dev`): hosted multi-tenant mode with self-serve sign-up, plans and quotas,
+  Stripe Checkout, Customer Portal and webhooks, plus deploy templates. See [docs/cloud.md](docs/cloud.md); pricing is a draft.
+* **DB-backed budget reservations** for exact limits across many replicas.
+* **Agent spend controls:** approval workflows for over-budget requests, a tamper-evident audit log, and spend reconciliation against provider invoices.
 * **Distillation:** capture opted-in traffic as datasets to fine-tune smaller, cheaper models that replace expensive ones on your own workloads.
 * **Learned routing:** quality tiers informed by your own evals and feedback, plus budget-aware downgrades instead of a hard stop.
-* **DB-backed budget reservations** for exact limits across many replicas.
 * **SSO (OIDC/SAML), 2FA, master-key rotation, and OpenTelemetry traces.**
-* **OpenGate Cloud:** a hosted version for teams (see `site/`; pricing is a draft).
 
 ## License
 

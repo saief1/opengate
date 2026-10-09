@@ -1,0 +1,35 @@
+# Render Blueprint: New > Blueprint > pick this repo, path deploy/render.yaml.
+# Fill the "sync: false" secrets in the dashboard when prompted.
+databases:
+  - name: opengate-db
+    plan: basic-256mb
+    databaseName: opengate
+    user: opengate
+    postgresMajorVersion: "17"
+
+services:
+  - type: web
+    name: opengate-cloud
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: /usr/local/bin/opengate serve -config /etc/secrets/cloud.yaml
+    plan: standard
+    numInstances: 1          # exact spend limits need one replica (docs/security-model.md)
+    healthCheckPath: /readyz
+    envVars:
+      - key: OPENGATE_DATABASE
+        fromDatabase: {name: opengate-db, property: connectionString}
+      - key: OPENGATE_PUBLIC_URL
+        sync: false          # https://opengate-cloud.onrender.com or your domain
+      - key: OPENGATE_ADMIN_TOKEN
+        generateValue: true
+      - key: OPENGATE_MASTER_KEY
+        sync: false          # from `opengate keygen`; generateValue is not a valid AES key
+      - key: STRIPE_API_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_PRICE_TEAM
+        sync: false
+    # Add deploy/cloud.yaml as a Secret File named cloud.yaml (mounted at /etc/secrets/cloud.yaml).

@@ -175,6 +175,9 @@ func (s *Server) begin(w http.ResponseWriter, r *http.Request, endpoint string) 
 		s.reject(w, rs, http.StatusBadRequest, "invalid_request_error", "invalid_request", "'model' is required.", 0)
 		return nil
 	}
+	if !s.cloudGate(w, rs) {
+		return nil
+	}
 	cust, err := s.customerID(r, key, proj, rs.raw)
 	if err != nil {
 		s.reject(w, rs, http.StatusForbidden, "permission_error", "customer_mismatch", "OpenGate: "+err.Error()+".", 0)

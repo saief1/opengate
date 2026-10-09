@@ -47,6 +47,7 @@ function toast(msg, bad) {
 }
 
 const ORG_KEY = "opengate_org";
+const PLAN_KEY = "opengate_signup_plan";
 const me = { kind: "", role: "viewer", orgs: [], org_id: "" };
 const can = (role) => ({ viewer: 1, member: 2, admin: 3, owner: 4 }[me.role] || 0) >= ({ viewer: 1, member: 2, admin: 3, owner: 4 }[role] || 9);
 
@@ -612,6 +613,52 @@ Object.assign(pages, {
     root.append(card("Every state-changing admin action, sign-in and invite (append-only; secrets are never recorded)", table(["When", "Actor", "Action", "Target", "Status", "IP", "Detail"], rows, "No admin actions yet."), pager));
   },
 
+  async billing(root, actions) {
+    const q = new URLSearchParams((location.hash.split("?")[1]) || "");
+    if (q.get("checkout")) history.replaceState(null, "", "#billing");
+    let b = await api("/billing");
+    if (q.get("checkout") === "success") {
+      toast("Payment received, thank you! Your plan is being activated.");
+      // The webhook usually lands before the redirect; poll briefly if not.
+      for (let i = 0; i < 6 && !b.has_subscription; i++) { await new Promise((r) => setTimeout(r, 1500)); b = await api("/billing"); }
+    } else if (q.get("checkout") === "cancel") toast("Checkout canceled; no charge was made.");
+    const eff = b.effective_plan, u = b.usage;
+    const date = (ts) => new Date(ts).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+    const go = async (path, body) => { const r = await api(path, { method: "POST", body }); location.href = r.url; };
+    if (b.can_manage && b.has_customer) actions.append(el("button", { class: "btn", onclick: () => go("/billing/portal") }, "Manage billing ↗"));
+    const lim = (v) => (v > 0 ? num(v) : "unlimited");
+    const meter = (label, used, max, sub) => el("div", { class: "card stat" }, el("div", { class: "label" }, label),
+      el("div", { class: "value" }, num(used), el("span", { class: "of" }, " / " + lim(max))), max > 0 ? bar(used, max) : null, el("div", { class: "sub" }, sub));
+    const statusTxt = { active: "Active", trialing: "Trial", past_due: "Payment failed", unpaid: "Unpaid", canceled: "Canceled", incomplete: "Incomplete" }[b.status] || b.status;
+    const statusCls = b.status === "active" || b.status === "trialing" ? "ok" : b.status === "past_due" ? "warn" : "info";
+    root.append(el("div", { class: "grid stats four" },
+      el("div", { class: "card stat" }, el("div", { class: "label" }, "Current plan"), el("div", { class: "value" }, eff.name),
+        el("div", { class: "sub" }, b.has_subscription ? el("span", { class: "badge " + statusCls }, statusTxt) : "no subscription",
+          b.has_subscription && b.current_period_end ? (b.cancel_at_period_end ? " · ends " : " · renews ") + date(b.current_period_end) : "")),
+      meter("Requests this month", u.requests, eff.max_requests_month, "resets on the 1st (UTC) · " + u.period),
+      meter("Team members", u.members, eff.max_members, u.pending_invites ? `+${u.pending_invites} pending invite(s)` : "members and pending invites count"),
+      meter("Projects", u.projects, eff.max_projects, eff.log_retention_days ? `request logs kept ${eff.log_retention_days} days` : "")));
+    if (b.status === "past_due") root.append(el("div", { class: "banner warn" }, "Your last payment failed. Stripe will retry automatically; update your card in the billing portal to keep your " + eff.name + " limits."));
+    else if (b.cancel_at_period_end) root.append(el("div", { class: "banner" }, `Your subscription is set to end on ${date(b.current_period_end)}. After that, the ${b.plans.find((p) => p.price_usd === 0 && !p.contact_sales)?.name || "free"} plan's limits apply.`));
+    else if (eff.max_requests_month > 0 && u.requests >= eff.max_requests_month) root.append(el("div", { class: "banner warn" }, "You've used all included requests for this month; gateway calls answer 429 until you upgrade or the month resets."));
+    const planCard = (p) => {
+      const current = p.id === eff.id;
+      let cta;
+      if (current) cta = el("button", { class: "btn", disabled: true }, "Current plan");
+      else if (p.contact_sales) cta = b.sales_url ? el("a", { class: "btn", href: b.sales_url, target: "_blank", rel: "noopener" }, "Contact sales") : el("button", { class: "btn", disabled: true }, "Contact sales");
+      else if (!p.self_serve) cta = b.has_subscription && b.can_manage ? el("button", { class: "btn", onclick: () => go("/billing/portal") }, "Downgrade (cancel in portal)") : null;
+      else if (!b.can_manage) cta = el("button", { class: "btn", disabled: true, title: "Only owners can change the plan" }, "Upgrade (owners only)");
+      else if (b.has_subscription) cta = el("button", { class: "btn", onclick: () => go("/billing/portal") }, "Change in billing portal");
+      else cta = el("button", { class: "btn primary", onclick: (e) => { e.target.disabled = true; e.target.textContent = "Redirecting to Stripe…"; go("/billing/checkout", { plan: p.id }).catch(() => { e.target.disabled = false; e.target.textContent = "Upgrade to " + p.name; }); } }, "Upgrade to " + p.name);
+      return el("div", { class: "card plan" + (current ? " current" : "") },
+        el("div", { class: "plan-head" }, el("h3", {}, p.name), current ? el("span", { class: "badge ok" }, "current") : null),
+        el("div", { class: "price" }, p.contact_sales ? "Custom" : p.price_usd > 0 ? el("span", {}, usd(p.price_usd, 0), el("small", {}, " / " + (p.interval || "month"))) : "Free"),
+        el("ul", { class: "features" }, (p.features || []).map((f) => el("li", {}, f))), cta);
+    };
+    root.append(el("div", { class: "grid plans section-gap" }, b.plans.map(planCard)),
+      el("p", { class: "muted small section-gap" }, "Payments, invoices and card details are handled by Stripe; OpenGate never sees card numbers. Provider costs are billed by your own provider accounts (bring your own keys)."));
+  },
+
   async settings(root) {
     const [org, st, cache, projects] = await Promise.all([api("/org"), api("/settings"), api("/cache"), api("/projects")]);
     const name = el("input", { value: org.name });
@@ -681,10 +728,10 @@ async function loadMe() {
   if (r.kind === "user") { const o = r.orgs.find((o) => o.id === r.org_id); if (o) me.role = o.role; }
 }
 const titles = { overview: "Overview", logs: "Request logs", keys: "Virtual keys", projects: "Projects", budgets: "Budgets & limits", providers: "Providers & failover",
-  routing: "Smart routing", guardrails: "Guardrails", customers: "Customers & billing", team: "Team", audit: "Audit log", settings: "Settings" };
+  routing: "Smart routing", guardrails: "Guardrails", customers: "Customers & billing", team: "Team", audit: "Audit log", settings: "Settings", billing: "Plan & billing" };
 let rendering = 0;
 async function renderPageOnly() {
-  const page = (location.hash || "#overview").slice(1);
+  const page = (location.hash || "#overview").slice(1).split("?")[0];
   const name = pages[page] ? page : "overview";
   const my = ++rendering;
   document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.page === name));
@@ -698,6 +745,8 @@ async function renderPageOnly() {
 async function render() { try { await loadState(); } catch (e) { return; } await renderPageOnly(); }
 
 let loginMode = "password";
+let authCfg = {};
+const TOKEN_HINT = "Operators can use the admin token; it stays in this tab's session storage.";
 function setMode(mode) {
   loginMode = mode;
   document.querySelectorAll("#login-tabs .tab").forEach((t) => t.classList.toggle("active", t.dataset.mode === mode));
@@ -707,12 +756,21 @@ function setMode(mode) {
   show("name", mode === "signup" || (invite && !pages.invite.existing_user)); show("org-name", mode === "signup");
   $("password").autocomplete = mode === "password" && !invite ? "current-password" : "new-password";
   $("login-submit").textContent = invite ? "Join " + pages.invite.org : mode === "signup" ? "Create account" : "Sign in";
+  const plan = sessionStorage.getItem(PLAN_KEY);
+  $("login-hint").textContent = mode === "signup"
+    ? (authCfg.cloud ? (plan && plan !== "free" ? `You'll start on Free, then continue to secure checkout (Stripe) for the ${plan} plan.` : "Start free. No credit card required.") : "Creates your account and a new organization.")
+    : authCfg.allow_signup ? "New here? Choose Sign up. " + TOKEN_HINT : "Accounts are invite-only. " + TOKEN_HINT;
 }
 function showLogin() { $("app").classList.add("hidden"); $("login").classList.remove("hidden"); }
 
 async function start() {
   const cfg = await api("/auth/config", { quiet: true }).catch(() => ({}));
+  authCfg = cfg;
   $("signup-tab").classList.toggle("hidden", !cfg.allow_signup);
+  $("nav-billing").classList.toggle("hidden", !cfg.cloud);
+  // Landing-page links: #signup or #signup?plan=team
+  const su = /^#signup(?:\?plan=([\w-]+))?/.exec(location.hash);
+  if (su && cfg.allow_signup) { if (su[1]) sessionStorage.setItem(PLAN_KEY, su[1]); loginMode = "signup"; history.replaceState(null, "", "#overview"); }
   const inv = /#invite=([\w-]+)/.exec(location.hash);
   if (inv) {
     try {
@@ -744,6 +802,12 @@ $("login-form").addEventListener("submit", async (e) => {
       try { await api("/auth/me", { quiet: true }); } catch (err) { sessionStorage.removeItem(TOKEN_KEY); throw new Error("Invalid admin token."); }
     } else if (loginMode === "signup") {
       await api("/auth/signup", { method: "POST", quiet: true, body: { email: $("email").value, name: $("name").value, password: $("password").value, org_name: $("org-name").value } });
+      const plan = sessionStorage.getItem(PLAN_KEY);
+      sessionStorage.removeItem(PLAN_KEY);
+      if (plan && plan !== "free") {
+        // Chosen on the pricing page: go straight to Stripe Checkout.
+        try { location.href = (await api("/billing/checkout", { method: "POST", quiet: true, body: { plan } })).url; return; } catch { location.hash = "#billing"; }
+      }
     } else {
       await api("/auth/login", { method: "POST", quiet: true, body: { email: $("email").value, password: $("password").value } });
     }

@@ -3,6 +3,22 @@
 All notable changes to OpenGate. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] (v2-dev)
+
+### Added: OpenGate Cloud (hosted, multi-tenant mode)
+- `cloud:` config. Self-serve sign-up (per-IP throttle) and a plan catalog (Free / Team / Enterprise drafts) with monthly
+  request quotas, seat, project and orgs-per-user limits, and per-plan log retention.
+- Stripe Checkout (subscriptions), the Customer Portal, and signed and de-duplicated webhooks that re-fetch subscription
+  state. A past-due grace period, operator-assigned plans, and billing changes recorded in the audit log.
+- Dashboard: a "Plan & billing" page (usage meters, plan cards, upgrade/manage) and sign-up deep links (`#signup?plan=team`).
+- `opengate mock-stripe` (a fake Stripe with hosted checkout and portal pages that sends signed webhooks) and `make cloud-demo`.
+- Deploy templates: Docker Compose + Caddy, Fly.io, Render and Kubernetes (`deploy/`); see `docs/cloud.md`.
+- Migration v6 (`org_billing`, `org_usage`, `stripe_events`). Admin API: `GET /admin/api/billing`,
+  `POST /admin/api/billing/checkout`, `POST /admin/api/billing/portal`, `PUT /admin/api/billing/plan`; webhook `POST /cloud/stripe/webhook`.
+
+### Security
+- Cloud mode refuses to start with `share_env_provider_keys` or operator Stripe meter sync (tenant isolation).
+
 ## [1.0.1] - 2026-10-09
 
 ### Security
