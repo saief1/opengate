@@ -372,6 +372,11 @@ var migrations = []migration{
 		`CREATE INDEX IF NOT EXISTS idx_audit_org_ts ON audit_log(org_id, ts)`,
 		`ALTER TABLE provider_keys ADD COLUMN org_id TEXT NOT NULL DEFAULT 'org_default'`,
 	}},
+	{5, "security hardening: passthrough feature allowlist, customer attribution controls", []string{
+		`ALTER TABLE projects ADD COLUMN allowed_features TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE projects ADD COLUMN trust_customer_header INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE virtual_keys ADD COLUMN customer_id TEXT NOT NULL DEFAULT ''`,
+	}},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

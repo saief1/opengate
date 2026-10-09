@@ -36,6 +36,12 @@ func (o *OpenAI) body(c *Call, stream bool) ([]byte, error) {
 	}
 	model, _ := json.Marshal(c.Target.Model)
 	m["model"] = model
+	// OpenGate normalizes requests to max_completion_tokens; servers other
+	// than OpenAI proper generally only understand max_tokens.
+	if (o.openRouter || c.Target.Config.Type != "openai") && m["max_completion_tokens"] != nil && m["max_tokens"] == nil {
+		m["max_tokens"] = m["max_completion_tokens"]
+		delete(m, "max_completion_tokens")
+	}
 	if c.CapTokens > 0 && m["max_tokens"] == nil && m["max_completion_tokens"] == nil {
 		field := "max_completion_tokens" // OpenAI: required for reasoning models
 		if o.openRouter || c.Target.Config.Type != "openai" {

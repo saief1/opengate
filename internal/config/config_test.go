@@ -82,3 +82,25 @@ func TestExampleConfigsLoad(t *testing.T) {
 		}
 	}
 }
+
+func TestUpstreamURLMustBeHTTPS(t *testing.T) {
+	for _, c := range []struct {
+		url      string
+		insecure bool
+		ok       bool
+	}{
+		{"https://api.example.com/v1", false, true},
+		{"http://127.0.0.1:9090/v1", false, true},
+		{"http://localhost:9090", false, true},
+		{"http://[::1]:9090", false, true},
+		{"http://mock:9090/v1", false, false},
+		{"http://mock:9090/v1", true, true},
+		{"ftp://x", true, false},
+		{"not a url", false, false},
+	} {
+		cfg := &Config{AllowInsecureUpstream: c.insecure}
+		if err := cfg.checkURL(c.url); (err == nil) != c.ok {
+			t.Errorf("%s (insecure=%v): err=%v", c.url, c.insecure, err)
+		}
+	}
+}

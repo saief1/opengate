@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -75,7 +76,14 @@ func minRole(method, pattern string) string {
 }
 
 func (s *Server) cookieSecure(r *http.Request) bool {
-	return s.cfg.Auth.SecureCookies || r.TLS != nil || (s.cfg.TrustProxyHeaders && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"))
+	if s.cfg.Auth.SecureCookies || r.TLS != nil {
+		return true
+	}
+	if !s.cfg.TrustProxyHeaders {
+		return false
+	}
+	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	return s.fromTrustedProxy(host) && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, token string, maxAge time.Duration) {
@@ -147,23 +155,26 @@ func (s *Server) adminAuth(pattern string, next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		ip := s.clientIP(r)
-		if locked, d := s.lockout.locked(ip); locked {
-			w.Header().Set("Retry-After", itoa(int(d.Seconds())+1))
-			writeError(w, http.StatusTooManyRequests, "rate_limit_error", "admin_locked_out",
-				"Too many failed admin authentications from this address; try again later.")
-			return
-		}
+		lk := "token|" + ip
 		var p *principal
 		if tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+			// The correct token always works: lockout only stops guessing,
+			// so nobody can lock the real operator out.
 			if s.cfg.AdminToken == "" || !secure.ConstantTimeEqual(strings.TrimSpace(tok), s.cfg.AdminToken) {
+				if locked, d := s.lockout.locked(lk); locked {
+					w.Header().Set("Retry-After", itoa(int(d.Seconds())+1))
+					writeError(w, http.StatusTooManyRequests, "rate_limit_error", "admin_locked_out",
+						"Too many failed admin authentications from this address; try again later.")
+					return
+				}
 				s.metrics.adminFails.Inc()
-				if s.lockout.fail(ip) {
+				if s.lockout.fail(lk) {
 					s.log.Warn("admin lockout", "remote_ip", ip, "duration", s.cfg.AdminLockout.Lockout.String())
 				}
 				writeError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_admin_token", "admin token required")
 				return
 			}
-			s.lockout.success(ip)
+			s.lockout.success(lk)
 			org := store.DefaultOrgID
 			if h := strings.TrimSpace(r.Header.Get("X-OpenGate-Org")); h != "" {
 				if _, err := s.store.GetOrg(r.Context(), h); err != nil {

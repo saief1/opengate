@@ -206,7 +206,8 @@ func TestResponsesAPIPassthrough(t *testing.T) {
 }
 
 func TestMetricsHealthAndReadiness(t *testing.T) {
-	e := setup(t)
+	const metricsToken = "metrics-token-for-tests"
+	e := setupWith(t, func(c *config.Config) { c.MetricsToken = metricsToken })
 	key, _, _ := e.newKey("m", "", nil)
 	decodeJSON(t, e.chat(key, map[string]any{"model": "openai/gpt-4o-mini", "messages": msgs("hi")}))
 	get := func(path, tok string) (int, string) {
@@ -225,7 +226,11 @@ func TestMetricsHealthAndReadiness(t *testing.T) {
 	if code, _ := get("/metrics", ""); code != 401 {
 		t.Fatalf("metrics must require a token, got %d", code)
 	}
-	code, body := get("/metrics", adminToken)
+	// The admin token is not a metrics credential (security review L5).
+	if code, _ := get("/metrics", adminToken); code != 401 {
+		t.Fatalf("admin token must not unlock /metrics, got %d", code)
+	}
+	code, body := get("/metrics", metricsToken)
 	if code != 200 || !strings.Contains(body, `opengate_requests_total{endpoint="chat",model="gpt-4o-mini",provider="openai",status="200"} 1`) &&
 		!strings.Contains(body, `opengate_requests_total{endpoint="chat",provider="openai",model="gpt-4o-mini",status="200"} 1`) {
 		t.Fatalf("metrics body:\n%s", body)
@@ -259,8 +264,14 @@ func TestAdminLockout(t *testing.T) {
 			t.Fatalf("attempt %d: %d", i, c)
 		}
 	}
-	if c := try(adminToken); c != 429 {
-		t.Fatalf("locked-out IP must be refused even with the right token, got %d", c)
+	// Further guesses are refused without being evaluated...
+	if c := try("wrong-token-guess"); c != 429 {
+		t.Fatalf("locked-out guesses must get 429, got %d", c)
+	}
+	// ...but the real token still works, so nobody can lock the operator out
+	// (security review M5).
+	if c := try(adminToken); c != 200 {
+		t.Fatalf("correct token must work while guesses are locked out, got %d", c)
 	}
 }
 

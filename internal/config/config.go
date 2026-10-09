@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -34,21 +36,29 @@ type Config struct {
 	DisableDashboard bool   `yaml:"disable_dashboard"`
 	// TrustProxyHeaders uses X-Forwarded-For as the client IP (admin
 	// lockout, audit log). Only enable behind a proxy you control.
-	TrustProxyHeaders bool                      `yaml:"trust_proxy_headers"`
-	Providers         map[string]ProviderConfig `yaml:"providers"`
-	Routes            map[string][]string       `yaml:"routes"`
-	Retry             RetryConfig               `yaml:"retry"`
-	Alerts            AlertsConfig              `yaml:"alerts"`
-	Budgets           BudgetsConfig             `yaml:"budgets"`
-	RateLimit         RateLimitConfig           `yaml:"rate_limit"`
-	Metrics           MetricsConfig             `yaml:"metrics"`
-	Log               LogConfig                 `yaml:"log"`
-	AdminLockout      LockoutConfig             `yaml:"admin_lockout"`
-	SmartRouting      SmartRoutingConfig        `yaml:"smart_routing"`
-	Guardrails        GuardrailsConfig          `yaml:"guardrails"`
-	Billing           BillingConfig             `yaml:"billing"`
-	Cache             CacheConfig               `yaml:"cache"`
-	Auth              AuthConfig                `yaml:"auth"`
+	TrustProxyHeaders bool `yaml:"trust_proxy_headers"`
+	// TrustedProxies (CIDRs) restricts X-Forwarded-* to these peers; the
+	// client IP is the rightmost X-Forwarded-For hop not in this list.
+	TrustedProxies []string `yaml:"trusted_proxies"`
+	// AllowInsecureUpstream permits plain-http provider / Stripe / webhook
+	// URLs to non-loopback hosts (keys would travel in cleartext).
+	AllowInsecureUpstream bool `yaml:"allow_insecure_upstream"`
+	// MaxInflight caps concurrent gateway requests instance-wide (0 = off).
+	MaxInflight  int                       `yaml:"max_inflight"`
+	Providers    map[string]ProviderConfig `yaml:"providers"`
+	Routes       map[string][]string       `yaml:"routes"`
+	Retry        RetryConfig               `yaml:"retry"`
+	Alerts       AlertsConfig              `yaml:"alerts"`
+	Budgets      BudgetsConfig             `yaml:"budgets"`
+	RateLimit    RateLimitConfig           `yaml:"rate_limit"`
+	Metrics      MetricsConfig             `yaml:"metrics"`
+	Log          LogConfig                 `yaml:"log"`
+	AdminLockout LockoutConfig             `yaml:"admin_lockout"`
+	SmartRouting SmartRoutingConfig        `yaml:"smart_routing"`
+	Guardrails   GuardrailsConfig          `yaml:"guardrails"`
+	Billing      BillingConfig             `yaml:"billing"`
+	Cache        CacheConfig               `yaml:"cache"`
+	Auth         AuthConfig                `yaml:"auth"`
 	// ShareEnvProviderKeys lets every organization use provider keys from
 	// environment variables. Default false: env keys serve only the default
 	// org; other orgs must bring their own (stored encrypted).
@@ -137,6 +147,9 @@ type CacheConfig struct {
 	// ShareAcrossCustomers lets identical requests from different end
 	// customers share entries (default false: the customer ID is part of the key).
 	ShareAcrossCustomers bool `yaml:"share_across_customers"`
+	// ShareAcrossKeys lets keys of the same project share entries (default
+	// false: the virtual key is part of the cache key).
+	ShareAcrossKeys bool `yaml:"share_across_keys"`
 }
 
 // BudgetsConfig tunes spend enforcement.
@@ -394,10 +407,26 @@ func (c *Config) Normalize() error {
 			return fmt.Errorf("provider %q: base_url is required", name)
 		}
 		p.BaseURL = strings.TrimRight(p.BaseURL, "/")
+		if err := c.checkURL(p.BaseURL); err != nil {
+			return fmt.Errorf("provider %q: base_url: %w", name, err)
+		}
 		if p.Timeout <= 0 {
 			p.Timeout = 120 * time.Second
 		}
 		c.Providers[name] = p
+	}
+	if c.Alerts.WebhookURL != "" {
+		if err := c.checkURL(c.Alerts.WebhookURL); err != nil {
+			return fmt.Errorf("alerts.webhook_url: %w", err)
+		}
+	}
+	for _, cidr := range c.TrustedProxies {
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			return fmt.Errorf("trusted_proxies: %w", err)
+		}
+	}
+	if c.MaxInflight < 0 {
+		return errors.New("max_inflight must be >= 0")
 	}
 	for alias, targets := range c.Routes {
 		if len(targets) == 0 {
@@ -469,6 +498,9 @@ func (c *Config) normalizePhase2() error {
 		st.BaseURL = "https://api.stripe.com"
 	}
 	st.BaseURL = strings.TrimRight(st.BaseURL, "/")
+	if err := c.checkURL(st.BaseURL); err != nil {
+		return fmt.Errorf("billing.stripe.base_url: %w", err)
+	}
 	if st.EventName == "" {
 		st.EventName = "opengate_usage"
 	}
@@ -509,4 +541,24 @@ func (c *Config) ValidateStripe() error {
 		return errors.New("billing.stripe.enabled requires STRIPE_API_KEY in the environment")
 	}
 	return nil
+}
+
+// checkURL requires https, except for loopback hosts (local mocks, sidecars)
+// or when allow_insecure_upstream is set.
+func (c *Config) checkURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("%q is not an absolute URL", raw)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		h := u.Hostname()
+		if ip := net.ParseIP(h); h == "localhost" || (ip != nil && ip.IsLoopback()) || c.AllowInsecureUpstream {
+			return nil
+		}
+		return fmt.Errorf("%q uses plain http to a non-loopback host; use https or set allow_insecure_upstream: true", raw)
+	}
+	return fmt.Errorf("%q: unsupported scheme %q", raw, u.Scheme)
 }

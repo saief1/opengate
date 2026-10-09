@@ -201,7 +201,13 @@ func TestGuardrails(t *testing.T) {
 	// Streams cannot be un-sent: findings are logged after the fact.
 	rs := e.chat(key, map[string]any{"model": "openai/gpt-leaky", "messages": msgs("hello"), "stream": true})
 	readSSE(t, rs)
-	if l := e.logs("limit=1")[0]; l["guard"] != "credit_card,email" || l["guard_action"] != "logged" {
+	// The stream's log row is written right after the last byte; poll.
+	l = e.logs("limit=1")[0]
+	for i := 0; i < 50 && l["stream"] != true; i++ {
+		time.Sleep(10 * time.Millisecond)
+		l = e.logs("limit=1")[0]
+	}
+	if l["guard"] != "credit_card,email" || l["guard_action"] != "logged" {
 		t.Fatalf("stream finding: %v", l)
 	}
 	// Category filter: phones are not in the list.
@@ -274,6 +280,8 @@ func TestCustomerBillingMarkupCSVAndStripe(t *testing.T) {
 		c.StripeAPIKey = "sk_test_mock_only"
 	})
 	key, _, projectID := e.newKey("saas", "", nil)
+	// Customer attribution from header / user field is opt-in per project.
+	e.admin("PATCH", "/admin/api/projects/"+projectID, map[string]any{"trust_customer_header": true}, 200)
 	e.admin("POST", "/admin/api/billing/markups", map[string]any{"markup_pct": 50}, 201)
 	e.admin("POST", "/admin/api/billing/markups", map[string]any{"project_id": projectID, "customer_id": "acme", "markup_pct": 10}, 201)
 	e.admin("PUT", "/admin/api/customers/"+projectID+"/acme", map[string]any{"name": "Acme Inc", "stripe_customer_id": "cus_acme"}, 200)
@@ -348,6 +356,7 @@ func TestResponseCache(t *testing.T) {
 		}
 	}
 	before := e.mock.Hits("openai", "gpt-4o")
+	e.admin("PATCH", "/admin/api/projects/"+projectID, map[string]any{"trust_customer_header": true}, 200)
 	e.admin("PUT", "/admin/api/projects/"+projectID+"/cache", map[string]any{"ttl_seconds": 60}, 200)
 	r1 := e.chat(key, body)
 	m1 := decodeJSON(t, r1)

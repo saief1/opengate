@@ -175,7 +175,12 @@ func (s *Server) begin(w http.ResponseWriter, r *http.Request, endpoint string) 
 		s.reject(w, rs, http.StatusBadRequest, "invalid_request_error", "invalid_request", "'model' is required.", 0)
 		return nil
 	}
-	rs.log.CustomerID = s.customerID(r, rs.raw)
+	cust, err := s.customerID(r, key, proj, rs.raw)
+	if err != nil {
+		s.reject(w, rs, http.StatusForbidden, "permission_error", "customer_mismatch", "OpenGate: "+err.Error()+".", 0)
+		return nil
+	}
+	rs.log.CustomerID = cust
 	if !s.applyRequestGuard(w, rs) {
 		return nil
 	}
@@ -373,7 +378,11 @@ func (s *Server) writeUpstreamFailure(ctx context.Context, w http.ResponseWriter
 		s.reject(w, rs, status, typ, "upstream_error", fmt.Sprintf("All upstream attempts failed (%d). Last error: %s", rs.log.Attempts, ue.Error()), 0)
 		return
 	}
-	s.reject(w, rs, http.StatusBadGateway, "upstream_error", "upstream_error", err.Error(), 0)
+	// Non-upstream failures (e.g. provider-key decryption) may carry internal
+	// detail: log it, return a generic message with the request ID.
+	s.log.Error("gateway request failed", "request_id", rs.log.ID, "err", err)
+	s.reject(w, rs, http.StatusBadGateway, "upstream_error", "upstream_error",
+		"OpenGate could not complete the request (request "+rs.log.ID+"); see the gateway log.", 0)
 }
 
 // withInflight registers the request for the kill switch.
@@ -381,6 +390,13 @@ func (s *Server) withInflight(rs *reqState) (context.Context, func()) {
 	ctx, cancel := context.WithCancelCause(rs.r.Context())
 	s.inflight.add(rs.log.ID, flight{keyID: rs.key.ID, projectID: rs.proj.ID, cancel: cancel})
 	s.metrics.inflight.Add(1)
+	// Close the check-to-register window: a kill that landed after begin()
+	// read the flags but before registration is caught here.
+	if k, err := s.store.GetKey(rs.r.Context(), rs.key.ID); err == nil && k.Killed {
+		cancel(errKilled)
+	} else if p, err := s.store.GetProject(rs.r.Context(), rs.proj.ID); err == nil && p.Killed {
+		cancel(errKilled)
+	}
 	return ctx, func() {
 		s.inflight.remove(rs.log.ID)
 		s.metrics.inflight.Add(-1)

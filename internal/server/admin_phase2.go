@@ -287,7 +287,16 @@ func (s *Server) adminGuardTest(w http.ResponseWriter, r *http.Request) {
 // ---------- cache ----------
 
 func (s *Server) adminCache(w http.ResponseWriter, r *http.Request) {
-	st, err := s.store.CacheStatsFor(r.Context(), r.URL.Query().Get("project_id"))
+	var ids []string
+	if pid := r.URL.Query().Get("project_id"); pid != "" {
+		if _, ok := s.projectInOrg(w, r, pid); !ok {
+			return
+		}
+		ids = []string{pid}
+	} else {
+		_, ids = s.orgProjects(r)
+	}
+	st, err := s.store.CacheStatsFor(r.Context(), ids)
 	if err != nil {
 		storeErr(w, err)
 		return
@@ -511,7 +520,8 @@ func (s *Server) adminStripeSync(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "invalid_request_error", "stripe_disabled", "Stripe sync is disabled (billing.stripe.enabled + STRIPE_API_KEY).")
 		return
 	}
-	res := s.stripe.Sync(r.Context())
+	_, ids := s.orgProjects(r)
+	res := s.stripe.SyncProjects(r.Context(), ids)
 	s.audit(r, "stripe.sync", "", res)
 	writeJSON(w, 200, res)
 }

@@ -75,7 +75,10 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	ip := s.clientIP(r)
 	email := strings.ToLower(strings.TrimSpace(in.Email))
-	for _, k := range []string{ip, "email:" + email} {
+	// Lock per account+IP (so a third party cannot lock a user out from
+	// elsewhere) and, with a 5x higher threshold, per IP against spraying.
+	acct, spray := "login|"+email+"|"+ip, "spray|"+ip
+	for _, k := range []string{acct, spray} {
 		if locked, d := s.lockout.locked(k); locked {
 			w.Header().Set("Retry-After", itoa(int(d.Seconds())+1))
 			writeError(w, http.StatusTooManyRequests, "rate_limit_error", "login_locked_out", "Too many failed sign-in attempts; try again later.")
@@ -91,8 +94,8 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ok {
 		s.metrics.adminFails.Inc()
-		s.lockout.fail(ip)
-		s.lockout.fail("email:" + email)
+		s.lockout.fail(acct)
+		s.sprayFail(spray)
 		if u != nil {
 			orgs, _ := s.store.ListOrgs(r.Context(), u.ID)
 			for _, o := range orgs {
@@ -102,8 +105,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_credentials", "Invalid email or password.")
 		return
 	}
-	s.lockout.success(ip)
-	s.lockout.success("email:" + email)
+	s.lockout.success(acct)
 	orgs, err := s.store.ListOrgs(r.Context(), u.ID)
 	if err != nil || len(orgs) == 0 {
 		writeError(w, http.StatusForbidden, "permission_error", "no_org", "This account is not a member of any organization.")
@@ -115,6 +117,20 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	s.auditSystem(r, orgs[0].ID, u, "auth.login", 200, nil)
 	writeJSON(w, 200, map[string]any{"user": u, "org": orgs[0], "orgs": orgs})
+}
+
+// sprayFail counts per-IP failures toward a 5x higher threshold.
+func (s *Server) sprayFail(key string) {
+	s.sprayMu.Lock()
+	defer s.sprayMu.Unlock()
+	s.sprayCount[key]++
+	if s.sprayCount[key] >= 5 {
+		s.sprayCount[key] = 0
+		s.lockout.fail(key)
+	}
+	if len(s.sprayCount) > 10000 {
+		s.sprayCount = map[string]int{}
+	}
 }
 
 func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
@@ -200,7 +216,7 @@ func (s *Server) authAcceptInvite(w http.ResponseWriter, r *http.Request) {
 		bad(w, err)
 		return
 	}
-	ip := s.clientIP(r)
+	ip := "invite|" + s.clientIP(r)
 	if locked, _ := s.lockout.locked(ip); locked {
 		writeError(w, http.StatusTooManyRequests, "rate_limit_error", "login_locked_out", "Too many failed attempts; try again later.")
 		return
@@ -266,7 +282,7 @@ func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
 		bad(w, err)
 		return
 	}
-	if locked, _ := s.lockout.locked(s.clientIP(r)); locked {
+	if locked, _ := s.lockout.locked("signup|" + s.clientIP(r)); locked {
 		writeError(w, http.StatusTooManyRequests, "rate_limit_error", "login_locked_out", "Too many attempts; try again later.")
 		return
 	}
@@ -280,7 +296,7 @@ func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
 	}
 	u, err := s.store.CreateUser(r.Context(), in.Email, in.Name, hash)
 	if errors.Is(err, store.ErrConflict) {
-		s.lockout.fail(s.clientIP(r))
+		s.lockout.fail("signup|" + s.clientIP(r))
 		writeError(w, http.StatusConflict, "invalid_request_error", "email_taken", "An account with this email already exists; sign in instead.")
 		return
 	}
@@ -320,7 +336,7 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !secure.VerifyPassword(in.Current, p.User.PasswordHash) {
-		s.lockout.fail(s.clientIP(r))
+		s.lockout.fail("login|" + p.User.Email + "|" + s.clientIP(r))
 		writeError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_credentials", "Current password is wrong.")
 		return
 	}

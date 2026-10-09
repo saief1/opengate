@@ -372,13 +372,20 @@ type CacheStats struct {
 	Bytes   int64 `json:"bytes"`
 }
 
-// CacheStatsFor returns live-entry statistics.
-func (s *Store) CacheStatsFor(ctx context.Context, projectID string) (CacheStats, error) {
-	q, args := `SELECT COUNT(*), CAST(COALESCE(SUM(hits),0) AS BIGINT), CAST(COALESCE(SUM(LENGTH(body)),0) AS BIGINT) FROM response_cache WHERE expires_at>?`, []any{ms(time.Now())}
-	if projectID != "" {
-		q, args = q+` AND project_id=?`, append(args, projectID)
-	}
+// CacheStatsFor returns live-entry statistics for the given projects
+// (nil = all projects; empty non-nil = none).
+func (s *Store) CacheStatsFor(ctx context.Context, projectIDs []string) (CacheStats, error) {
 	var st CacheStats
+	q, args := `SELECT COUNT(*), CAST(COALESCE(SUM(hits),0) AS BIGINT), CAST(COALESCE(SUM(LENGTH(body)),0) AS BIGINT) FROM response_cache WHERE expires_at>?`, []any{ms(time.Now())}
+	if projectIDs != nil {
+		if len(projectIDs) == 0 {
+			return st, nil
+		}
+		q += ` AND project_id IN (?` + strings.Repeat(",?", len(projectIDs)-1) + `)`
+		for _, id := range projectIDs {
+			args = append(args, id)
+		}
+	}
 	err := s.queryRow(ctx, q, args...).Scan(&st.Entries, &st.Hits, &st.Bytes)
 	return st, err
 }

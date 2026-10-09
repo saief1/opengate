@@ -38,23 +38,29 @@ alerts:
 budgets:
   strict: false                 # true: refuse requests whose worst case (max_tokens) exceeds the remaining budget
   sync_interval: 0s             # re-read spend from the DB (default 5s with PostgreSQL, for multiple replicas)
+                                # NOTE: reservations are per process. With N replicas a limit can be
+                                # overshot by up to N x (in-flight requests) x (request cost) within one
+                                # sync interval. Run one replica if limits must be hard to the cent.
 
 rate_limit:
   backend: database             # database (persisted; shared across replicas on PostgreSQL) | memory
 
 metrics:
-  disabled: false               # GET /metrics (Prometheus); bearer OPENGATE_METRICS_TOKEN or the admin token
+  disabled: false               # GET /metrics (Prometheus); bearer OPENGATE_METRICS_TOKEN (the admin token is NOT accepted)
   public: false
 
 log:
   level: info                   # OPENGATE_LOG_LEVEL: debug|info|warn|error
   format: json                  # OPENGATE_LOG_FORMAT: json|text
 
-admin_lockout:                  # per client IP
+admin_lockout:                  # wrong guesses per IP (token) / per account+IP (password); the right credential always works
   max_failures: 10
   window: 5m
   lockout: 15m
 trust_proxy_headers: false      # use X-Forwarded-For for the client IP (only behind your own proxy)
+trusted_proxies: []             # e.g. [10.0.0.0/8]: XFF honored only from these peers; client = rightmost untrusted hop
+allow_insecure_upstream: false  # allow plain-http provider/Stripe/webhook URLs to non-loopback hosts
+max_inflight: 0                 # instance-wide cap on concurrent gateway requests (0 = unlimited)
 
 # Smart routing. Rules (by prompt length, tags, headers, agent, cost
 # ceiling) are managed in the dashboard / admin API. The "auto" alias picks
@@ -79,7 +85,8 @@ guardrails:
   injection: off                # off | log | block
 
 billing:
-  customer_header: X-OpenGate-Customer   # falls back to the OpenAI "user" field
+  customer_header: X-OpenGate-Customer   # falls back to the OpenAI "user" field. Honored only for projects
+                                          # with trust_customer_header (or keys bound to a customer_id).
   ignore_user_field: false
   stripe:
     enabled: false              # needs STRIPE_API_KEY in the environment
@@ -88,8 +95,9 @@ billing:
     interval: 1h
     lag: 15m
 
-cache:                          # exact-match response cache, opt-in per project or X-OpenGate-Cache-TTL header
+cache:                          # exact-match response cache, opt-in per project (X-OpenGate-Cache-TTL can only shorten it)
   disabled: false
   max_ttl: 24h
   max_entry_bytes: 1048576
   share_across_customers: false
+  share_across_keys: false      # default: the virtual key is part of the cache key

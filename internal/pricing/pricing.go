@@ -83,6 +83,10 @@ type Table struct {
 	def      *Price
 }
 
+// HasDefault reports whether the table has a fallback price for unknown
+// models (without one, unknown models cost $0 unless budgets.strict).
+func (t *Table) HasDefault() bool { return t != nil && t.def != nil }
+
 // Parse parses a YAML price table.
 func Parse(data []byte) (*Table, error) {
 	var f file

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -71,7 +72,9 @@ func storeErr(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "invalid_request_error", "not_found", "not found")
 		return
 	}
-	writeError(w, http.StatusInternalServerError, "server_error", "internal_error", err.Error())
+	// Don't leak schema / driver details; the detail goes to the server log.
+	slog.Default().Error("admin store error", "err", err)
+	writeError(w, http.StatusInternalServerError, "server_error", "internal_error", "internal error (see server log)")
 }
 
 func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
@@ -120,6 +123,9 @@ func (s *Server) adminLogs(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
+	if offset < 0 {
+		offset = 0
+	}
 	logs, total, err := s.store.ListLogs(r.Context(), store.LogFilter{OrgID: orgID(r), CustomerID: q.Get("customer_id"), GuardOnly: q.Get("guard") == "1", ProjectID: q.Get("project_id"), KeyID: q.Get("key_id"),
 		Agent: q.Get("agent"), Model: q.Get("model"), ErrorsOnly: q.Get("errors") == "1", Limit: limit, Offset: offset})
 	if err != nil {
@@ -190,8 +196,10 @@ func (s *Server) adminCreateProject(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) adminPatchProject(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		LogBodies       *bool `json:"log_bodies"`
-		CacheTTLSeconds *int  `json:"cache_ttl_seconds"`
+		LogBodies           *bool     `json:"log_bodies"`
+		CacheTTLSeconds     *int      `json:"cache_ttl_seconds"`
+		AllowedFeatures     *[]string `json:"allowed_features"`
+		TrustCustomerHeader *bool     `json:"trust_customer_header"`
 		policyInput
 	}
 	if err := decode(r, &in); err != nil {
@@ -218,6 +226,25 @@ func (s *Server) adminPatchProject(w http.ResponseWriter, r *http.Request) {
 			bad(w, err)
 			return
 		}
+	}
+	if in.AllowedFeatures != nil || in.TrustCustomerHeader != nil {
+		cur, err := s.store.GetProject(r.Context(), id)
+		if err != nil {
+			storeErr(w, err)
+			return
+		}
+		feats, trust := cur.AllowedFeatures, cur.TrustCustomerHeader
+		if in.AllowedFeatures != nil {
+			feats = *in.AllowedFeatures
+		}
+		if in.TrustCustomerHeader != nil {
+			trust = *in.TrustCustomerHeader
+		}
+		if err := s.store.SetProjectSecurity(r.Context(), id, feats, trust); err != nil {
+			bad(w, err)
+			return
+		}
+		s.audit(r, "project.security", id, map[string]any{"allowed_features": feats, "trust_customer_header": trust})
 	}
 	if in.LogBodies != nil {
 		if err := s.store.SetProjectLogBodies(r.Context(), id, *in.LogBodies); err != nil {
@@ -375,7 +402,10 @@ func (p policyInput) merge(cur store.ModelPolicy) store.ModelPolicy {
 }
 
 func (s *Server) adminPatchKey(w http.ResponseWriter, r *http.Request) {
-	var in policyInput
+	var in struct {
+		policyInput
+		CustomerID *string `json:"customer_id"`
+	}
 	if err := decode(r, &in); err != nil {
 		bad(w, err)
 		return
@@ -389,9 +419,22 @@ func (s *Server) adminPatchKey(w http.ResponseWriter, r *http.Request) {
 		storeErr(w, err)
 		return
 	}
-	if err := s.store.SetKeyPolicy(r.Context(), id, in.merge(k.ModelPolicy)); err != nil {
-		bad(w, err)
-		return
+	if in.policyInput.set() {
+		if err := s.store.SetKeyPolicy(r.Context(), id, in.merge(k.ModelPolicy)); err != nil {
+			bad(w, err)
+			return
+		}
+	}
+	if in.CustomerID != nil {
+		if *in.CustomerID != "" && !validCustomerID(*in.CustomerID) {
+			bad(w, fmt.Errorf("invalid customer_id"))
+			return
+		}
+		if err := s.store.SetKeyCustomer(r.Context(), id, *in.CustomerID); err != nil {
+			storeErr(w, err)
+			return
+		}
+		s.audit(r, "key.bind_customer", id, map[string]string{"customer_id": *in.CustomerID})
 	}
 	k, _ = s.store.GetKey(r.Context(), id)
 	writeJSON(w, 200, k)

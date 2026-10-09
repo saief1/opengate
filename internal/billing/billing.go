@@ -177,14 +177,31 @@ type SyncResult struct {
 // Sync reports usage for every mapped customer from its cursor up to now-lag.
 // Each event carries a deterministic identifier, so a retried window is
 // de-duplicated by Stripe. Fractional cents are carried forward.
-func (s *Stripe) Sync(ctx context.Context) SyncResult {
+func (s *Stripe) Sync(ctx context.Context) SyncResult { return s.sync(ctx, nil) }
+
+// SyncProjects syncs only customers of the given projects (one org's).
+func (s *Stripe) SyncProjects(ctx context.Context, projectIDs []string) SyncResult {
+	allow := map[string]bool{}
+	for _, id := range projectIDs {
+		allow[id] = true
+	}
+	return s.sync(ctx, allow)
+}
+
+func (s *Stripe) sync(ctx context.Context, only map[string]bool) SyncResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var res SyncResult
-	states, err := s.st.StripeSyncStates(ctx)
+	all, err := s.st.StripeSyncStates(ctx)
 	if err != nil {
 		res.Errors = append(res.Errors, err.Error())
 		return res
+	}
+	states := all[:0:0]
+	for _, st := range all {
+		if only == nil || only[st.ProjectID] {
+			states = append(states, st)
+		}
 	}
 	end := s.now().Add(-s.cfg.Lag).Truncate(time.Millisecond)
 	for _, st := range states {

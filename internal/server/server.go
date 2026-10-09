@@ -10,10 +10,12 @@ import (
 	"io/fs"
 	"log/slog"
 	"mime"
+	"net"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/opengate-dev/opengate/internal/billing"
@@ -71,6 +73,11 @@ type Server struct {
 	routingRules *ttlCache[[]*store.RoutingRule]
 	stripe       *billing.Stripe // nil unless billing.stripe.enabled
 
+	trusted    []*net.IPNet // trusted_proxies
+	active     atomic.Int64 // requests in the gateway (max_inflight)
+	sprayMu    sync.Mutex
+	sprayCount map[string]int
+
 	keyMu    sync.Mutex
 	keyCache map[string]string // provider name -> decrypted API key ("" = none)
 }
@@ -103,6 +110,20 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		enforcer: enf, alerter: o.Alerter, adapters: map[string]provider.Adapter{}, inflight: newInflight(),
 		sleep: o.Sleep, keyCache: map[string]string{}, metrics: newGatewayMetrics(),
 		lockout: newLockout(lc.MaxFailures, lc.Window, lc.Lockout)}
+	if t := o.Pricing.Table(); t != nil && !t.HasDefault() && !o.Config.Budgets.Strict {
+		s.log.Warn("pricing table has no `default:` entry and budgets.strict is off: unknown models will be charged $0")
+	}
+	if o.Config.TrustProxyHeaders && len(o.Config.TrustedProxies) == 0 {
+		s.log.Warn("trust_proxy_headers is on without trusted_proxies: only the rightmost X-Forwarded-For hop is used; set trusted_proxies to your proxy CIDRs")
+	}
+	s.sprayCount = map[string]int{}
+	for _, c := range o.Config.TrustedProxies {
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			return nil, fmt.Errorf("trusted_proxies: %w", err)
+		}
+		s.trusted = append(s.trusted, n)
+	}
 	s.markups = billing.NewMarkups(o.Store, 10*time.Second)
 	s.routingRules = &ttlCache[[]*store.RoutingRule]{ttl: 5 * time.Second, load: func(ctx context.Context) ([]*store.RoutingRule, error) {
 		return o.Store.ListRoutingRules(ctx, "")
@@ -133,10 +154,16 @@ func (s *Server) Run(ctx context.Context) {
 	}
 	t := time.NewTicker(5 * time.Minute)
 	defer t.Stop()
+	// Kills issued on another replica (shared Postgres) reach this
+	// replica's in-flight streams within one poll interval.
+	kt := time.NewTicker(2 * time.Second)
+	defer kt.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-kt.C:
+			s.SweepKills(ctx)
 		case <-t.C:
 			if err := s.store.PruneRateBuckets(ctx, time.Now().Add(-10*time.Minute)); err != nil {
 				s.log.Warn("prune rate buckets", "err", err)
@@ -151,12 +178,29 @@ func (s *Server) Run(ctx context.Context) {
 	}
 }
 
+// limitInflight enforces the optional instance-wide max_inflight cap.
+func (s *Server) limitInflight(h http.HandlerFunc) http.HandlerFunc {
+	if s.cfg.MaxInflight <= 0 {
+		return h
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if n := s.active.Add(1); n > int64(s.cfg.MaxInflight) {
+			s.active.Add(-1)
+			w.Header().Set("Retry-After", "1")
+			writeError(w, http.StatusServiceUnavailable, "server_error", "gateway_overloaded", "OpenGate is at its max_inflight limit; retry shortly.")
+			return
+		}
+		defer s.active.Add(-1)
+		h(w, r)
+	}
+}
+
 // Handler returns the root HTTP handler.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/chat/completions", s.handleChat)
-	mux.HandleFunc("POST /v1/embeddings", s.handleEmbeddings)
-	mux.HandleFunc("POST /v1/responses", s.handleResponses)
+	mux.HandleFunc("POST /v1/chat/completions", s.limitInflight(s.handleChat))
+	mux.HandleFunc("POST /v1/embeddings", s.limitInflight(s.handleEmbeddings))
+	mux.HandleFunc("POST /v1/responses", s.limitInflight(s.handleResponses))
 	mux.HandleFunc("GET /v1/models", s.handleModels)
 	// Liveness: the process is up. Readiness: dependencies answer.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -199,6 +243,9 @@ func uiHeaders(next http.Handler) http.Handler {
 		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Cache-Control", "no-cache")
+		if r.TLS != nil {
+			h.Set("Strict-Transport-Security", "max-age=31536000")
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -373,6 +420,50 @@ func (f *inflight) remove(id string) {
 	f.mu.Lock()
 	delete(f.m, id)
 	f.mu.Unlock()
+}
+
+// snapshot returns the distinct key and project IDs currently in flight.
+func (f *inflight) snapshot() (keys, projects []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ks, ps := map[string]bool{}, map[string]bool{}
+	for _, fl := range f.m {
+		if !ks[fl.keyID] {
+			ks[fl.keyID] = true
+			keys = append(keys, fl.keyID)
+		}
+		if !ps[fl.projectID] {
+			ps[fl.projectID] = true
+			projects = append(projects, fl.projectID)
+		}
+	}
+	return
+}
+
+// SweepKills re-reads the kill/revoke flags of everything in flight from the
+// database and aborts requests whose key or project was killed elsewhere
+// (another replica, or directly in the DB). It returns the number aborted.
+func (s *Server) SweepKills(ctx context.Context) int {
+	keys, projects := s.inflight.snapshot()
+	if len(keys) == 0 {
+		return 0
+	}
+	deadKeys, deadProjects, err := s.store.KilledAmong(ctx, keys, projects)
+	if err != nil {
+		s.log.Warn("kill sweep", "err", err)
+		return 0
+	}
+	n := 0
+	for _, k := range deadKeys {
+		n += s.inflight.kill(k, "")
+	}
+	for _, p := range deadProjects {
+		n += s.inflight.kill("", p)
+	}
+	if n > 0 {
+		s.log.Info("kill sweep aborted in-flight requests", "count", n)
+	}
+	return n
 }
 
 // kill cancels in-flight requests matching keyID or projectID.

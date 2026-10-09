@@ -141,7 +141,16 @@ If a stream breaks mid-way, a final `data: {"error":…}` event is sent instead 
   or `POST /admin/api/pricing/reload`) gives the cost. Unknown models are charged at the `default` rate so budgets still apply.
   If a provider reports no usage (for example, an aborted stream), tokens are estimated (~4 chars/token) and the log is flagged as estimated.
 * **Kill switch:** `POST /admin/api/keys/{id}/kill` or `/admin/api/projects/{id}/kill` (or the red button in the dashboard).
-  New requests get a 403, and in-flight requests and streams for that key or project are cancelled immediately.
+  New requests get a 403, and in-flight requests and streams for that key or project are cancelled immediately
+  on the receiving instance, and within ~2 s on other replicas sharing the database (each replica polls the kill flags of its in-flight requests).
+* **Worst-case reservations:** before a request goes upstream, its worst-case cost (prompt estimate + `max_tokens` × `n`) is reserved
+  atomically against every limit and reconciled with actual usage afterwards. `max_tokens` and `max_completion_tokens` are
+  collapsed into one field holding the larger value, so a cap can't be dodged by sending both. Passthrough features whose cost
+  OpenGate can't see or bound (Responses `background`, provider-hosted tools such as web/file search, code interpreter and image
+  generation, chat `n > 1`, `store: true`) are refused unless the project lists them in `allowed_features`.
+* **Multiple replicas:** reservations live in each process; committed spend is shared through the database and re-read every
+  `budgets.sync_interval` (5 s on PostgreSQL). With N replicas a limit can be overshot by up to N × in-flight × request cost
+  inside one interval. **Run a single instance if limits must be exact to the cent**; DB-backed reservations are on the roadmap.
 * **Alerts:** set `OPENGATE_ALERT_WEBHOOK_URL` to a Slack incoming webhook (or any HTTP endpoint). Alerts fire once
   per scope, period and threshold (default 80% and 100%), and on every kill-switch change. The payload is `{"text": "...", "kind", "scope", "period", "threshold", "spent_usd", "limit_usd", ...}`.
 
@@ -212,7 +221,18 @@ Every endpoint needs `Authorization: Bearer $OPENGATE_ADMIN_TOKEN`.
   and the row id plus provider bound in as additional authenticated data, so ciphertexts cannot be swapped between rows. They are never
   returned by the API (only a `…1234` hint). Losing the master key means re-entering provider keys.
 * **The admin token** is compared in constant time. The dashboard keeps it in `sessionStorage` only and sends it
-  as a bearer header, with no cookies, so there's no CSRF surface.
+  as a bearer header. Dashboard user sessions use `HttpOnly`, `SameSite=Strict` cookies plus a required `X-Requested-With`
+  header on writes. Every admin route is scoped to the caller's organization (another org's IDs answer 404).
+* **Brute-force protection:** wrong admin tokens are locked out per client IP, passwords per account+IP (plus a looser per-IP
+  limit against spraying). The correct credential always works, so an attacker can't lock the operator out. The lockout table
+  is bounded and expires. `X-Forwarded-For` is only used with `trust_proxy_headers`, read from the right, and with
+  `trusted_proxies` only from those peers.
+* **Customer attribution** (`X-OpenGate-Customer` / `user`) is client-asserted, so it's ignored unless the project sets
+  `trust_customer_header` (use that only when the caller is your own backend). Alternatively, bind a key to a customer
+  (`PATCH /admin/api/keys/{id} {"customer_id": "..."}`), which overrides and rejects conflicting assertions. Cache entries are
+  scoped per project, key and customer.
+* **Outbound URLs** (providers, Stripe, alert webhook) must be `https://` except loopback, unless `allow_insecure_upstream`.
+* **Metrics** need their own `OPENGATE_METRICS_TOKEN` (or `metrics.public: true`). The admin token is deliberately not accepted.
 * **The dashboard** is served with a strict CSP (`default-src 'self'`, no inline scripts or styles), `X-Frame-Options: DENY`
   and `nosniff`. All DOM is built with `textContent`, never `innerHTML`, so logged content can't inject markup.
 * **Privacy:** prompt and response bodies are **not stored** unless a project turns on body logging (and then they're truncated).

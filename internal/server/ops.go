@@ -113,16 +113,26 @@ func itoa(i int) string {
 }
 
 // handleMetrics serves Prometheus metrics. It requires OPENGATE_METRICS_TOKEN
-// (or the admin token) as a bearer token unless metrics.public is set.
+// as a bearer token unless metrics.public is set. (It deliberately does not
+// fall back to the admin token, which would end up in scrape configs.)
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if !s.cfg.Metrics.Public {
+		ip := s.clientIP(r)
+		if locked, d := s.lockout.locked("metrics|" + ip); locked {
+			w.Header().Set("Retry-After", itoa(int(d.Seconds())+1))
+			writeError(w, http.StatusTooManyRequests, "rate_limit_error", "locked_out", "too many failed metrics authentications")
+			return
+		}
 		tok, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		tok = strings.TrimSpace(tok)
 		want := s.cfg.MetricsToken
 		if want == "" {
-			want = s.cfg.AdminToken
+			w.Header().Set("WWW-Authenticate", `Bearer realm="opengate-metrics"`)
+			writeError(w, http.StatusUnauthorized, "invalid_request_error", "metrics_token_unset", "set OPENGATE_METRICS_TOKEN (or metrics.public: true) to enable scraping")
+			return
 		}
-		if want == "" || !secure.ConstantTimeEqual(tok, want) {
+		if !secure.ConstantTimeEqual(tok, want) {
+			s.lockout.fail("metrics|" + ip)
 			w.Header().Set("WWW-Authenticate", `Bearer realm="opengate-metrics"`)
 			writeError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_metrics_token", "metrics token required")
 			return
@@ -157,13 +167,16 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 
 // ---------- admin login throttling ----------
 
-// lockout tracks failed admin authentications per client IP and locks an
-// IP out after MaxFailures failures inside Window.
+// lockout tracks failed authentications per key (an IP, or "account|IP") and
+// locks the key after max failures inside window. Entries expire once both
+// their failures and lock are older than the window, and the table is capped
+// so rotating source addresses cannot exhaust memory.
 type lockout struct {
 	mu       sync.Mutex
 	max      int
 	window   time.Duration
 	duration time.Duration
+	cap      int
 	now      func() time.Time
 	entries  map[string]*lockEntry
 }
@@ -171,17 +184,20 @@ type lockout struct {
 type lockEntry struct {
 	fails       []time.Time
 	lockedUntil time.Time
+	last        time.Time
 }
+
+const lockoutCap = 50000
 
 func newLockout(max int, window, duration time.Duration) *lockout {
-	return &lockout{max: max, window: window, duration: duration, now: time.Now, entries: map[string]*lockEntry{}}
+	return &lockout{max: max, window: window, duration: duration, cap: lockoutCap, now: time.Now, entries: map[string]*lockEntry{}}
 }
 
-// locked reports whether ip is locked out and for how long.
-func (l *lockout) locked(ip string) (bool, time.Duration) {
+// locked reports whether key is locked out and for how long.
+func (l *lockout) locked(key string) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	e := l.entries[ip]
+	e := l.entries[key]
 	if e == nil {
 		return false, 0
 	}
@@ -192,14 +208,17 @@ func (l *lockout) locked(ip string) (bool, time.Duration) {
 }
 
 // fail records a failure; it returns true when this failure triggered a lockout.
-func (l *lockout) fail(ip string) bool {
+func (l *lockout) fail(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
-	e := l.entries[ip]
+	e := l.entries[key]
 	if e == nil {
+		if len(l.entries) >= l.cap {
+			l.evict(now)
+		}
 		e = &lockEntry{}
-		l.entries[ip] = e
+		l.entries[key] = e
 	}
 	keep := e.fails[:0]
 	for _, t := range e.fails {
@@ -207,44 +226,108 @@ func (l *lockout) fail(ip string) bool {
 			keep = append(keep, t)
 		}
 	}
-	e.fails = append(keep, now)
+	e.fails, e.last = append(keep, now), now
 	if len(e.fails) >= l.max {
 		e.lockedUntil = now.Add(l.duration)
 		e.fails = nil
 		return true
 	}
-	// Opportunistic cleanup so the map cannot grow without bound.
-	if len(l.entries) > 10000 {
-		for k, v := range l.entries {
-			if len(v.fails) == 0 && now.After(v.lockedUntil) {
-				delete(l.entries, k)
+	return false
+}
+
+// evict drops expired entries; if the table is still full it drops the
+// least recently failed unlocked entries (locked ones are kept).
+func (l *lockout) evict(now time.Time) {
+	for k, e := range l.entries {
+		if now.After(e.lockedUntil) && now.Sub(e.last) >= l.window {
+			delete(l.entries, k)
+		}
+	}
+	for len(l.entries) >= l.cap {
+		var oldK string
+		var oldT time.Time
+		for k, e := range l.entries {
+			if now.Before(e.lockedUntil) {
+				continue
 			}
+			if oldK == "" || e.last.Before(oldT) {
+				oldK, oldT = k, e.last
+			}
+		}
+		if oldK == "" { // everything locked: drop the oldest lock
+			for k, e := range l.entries {
+				if oldK == "" || e.last.Before(oldT) {
+					oldK, oldT = k, e.last
+				}
+			}
+		}
+		delete(l.entries, oldK)
+	}
+}
+
+func (l *lockout) size() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.entries)
+}
+
+func (l *lockout) success(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if e := l.entries[key]; e != nil && !l.now().Before(e.lockedUntil) {
+		delete(l.entries, key)
+	}
+}
+
+// clientIP returns the caller's IP. X-Forwarded-For is used only with
+// trust_proxy_headers, and then walked from the right: the first address
+// that is not a configured trusted proxy is the client (the leftmost
+// entries are client-controlled and never trusted). Without
+// trusted_proxies, only the single rightmost entry (added by the one proxy
+// in front) is used.
+func (s *Server) clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if !s.cfg.TrustProxyHeaders || !s.fromTrustedProxy(host) {
+		return host
+	}
+	var hops []string
+	for _, v := range r.Header.Values("X-Forwarded-For") {
+		for _, h := range strings.Split(v, ",") {
+			if h = strings.TrimSpace(h); h != "" {
+				hops = append(hops, h)
+			}
+		}
+	}
+	for i := len(hops) - 1; i >= 0; i-- {
+		ip := net.ParseIP(hops[i])
+		if ip == nil {
+			break
+		}
+		if len(s.trusted) == 0 || !s.isTrusted(ip) {
+			return ip.String()
+		}
+	}
+	return host
+}
+
+func (s *Server) isTrusted(ip net.IP) bool {
+	for _, n := range s.trusted {
+		if n.Contains(ip) {
+			return true
 		}
 	}
 	return false
 }
 
-func (l *lockout) success(ip string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if e := l.entries[ip]; e != nil && !l.now().Before(e.lockedUntil) {
-		delete(l.entries, ip)
+// fromTrustedProxy: with trusted_proxies configured, X-Forwarded-For is only
+// honored when the TCP peer is one of them.
+func (s *Server) fromTrustedProxy(peer string) bool {
+	if len(s.trusted) == 0 {
+		return true
 	}
-}
-
-// clientIP returns the caller's IP (X-Forwarded-For only when configured).
-func (s *Server) clientIP(r *http.Request) string {
-	if s.cfg.TrustProxyHeaders {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			first, _, _ := strings.Cut(xff, ",")
-			if ip := strings.TrimSpace(first); ip != "" {
-				return ip
-			}
-		}
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
+	ip := net.ParseIP(peer)
+	return ip != nil && s.isTrusted(ip)
 }

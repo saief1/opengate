@@ -71,6 +71,49 @@ type Project struct {
 	Guardrails *GuardSettings `json:"guardrails"`
 	// CacheTTLSeconds > 0 opts the project into exact-match response caching.
 	CacheTTLSeconds int `json:"cache_ttl_seconds"`
+	// AllowedFeatures opts into passthrough features whose cost OpenGate
+	// cannot bound or price (see FeatureXxx); default none.
+	AllowedFeatures []string `json:"allowed_features"`
+	// TrustCustomerHeader honors the client-asserted customer header / user
+	// field. Only enable when callers are your own trusted backend.
+	TrustCustomerHeader bool `json:"trust_customer_header"`
+}
+
+// Passthrough features that must be enabled per project.
+const (
+	FeatureBackground   = "background"    // Responses API background mode (no usage returned)
+	FeatureMultiChoice  = "n"             // chat n > 1
+	FeatureBuiltinTools = "builtin_tools" // provider-hosted tools billed per call (web/file search, code interpreter, image gen, audio)
+	FeatureStore        = "store"         // provider-side storage of responses
+)
+
+// ValidFeature reports whether f is a known feature flag.
+func ValidFeature(f string) bool {
+	switch f {
+	case FeatureBackground, FeatureMultiChoice, FeatureBuiltinTools, FeatureStore:
+		return true
+	}
+	return false
+}
+
+// HasFeature reports whether the project enabled f.
+func (p *Project) HasFeature(f string) bool {
+	for _, x := range p.AllowedFeatures {
+		if x == f {
+			return true
+		}
+	}
+	return false
+}
+
+// SetProjectSecurity updates the feature allowlist and customer-header trust.
+func (s *Store) SetProjectSecurity(ctx context.Context, id string, features []string, trustCustomer bool) error {
+	for _, f := range features {
+		if !ValidFeature(f) {
+			return fmt.Errorf("unknown feature %q (valid: background, n, builtin_tools, store)", f)
+		}
+	}
+	return s.execOne(ctx, `UPDATE projects SET allowed_features=?, trust_customer_header=? WHERE id=?`, joinList(features), b2i(trustCustomer), id)
 }
 
 // GuardSettings configures PII/secret redaction and prompt-injection
@@ -118,7 +161,7 @@ func (s *Store) CreateProjectInOrg(ctx context.Context, orgID, name string, logB
 		orgID = DefaultOrgID
 	}
 	p := &Project{ID: secure.RandomID("prj_"), OrgID: orgID, Name: name, LogBodies: logBodies, CreatedAt: time.Now().UTC(),
-		ModelPolicy: ModelPolicy{AllowedModels: []string{}, DeniedModels: []string{}}}
+		ModelPolicy: ModelPolicy{AllowedModels: []string{}, DeniedModels: []string{}}, AllowedFeatures: []string{}}
 	_, err := s.exec(ctx, `INSERT INTO projects(id,org_id,name,log_bodies,killed,created_at) VALUES(?,?,?,?,0,?)`,
 		p.ID, p.OrgID, p.Name, b2i(logBodies), ms(p.CreatedAt))
 	if err != nil {
@@ -142,14 +185,15 @@ func (s *Store) EnsureProject(ctx context.Context, name string) (*Project, error
 	return s.CreateProject(ctx, name, false)
 }
 
-const projectCols = `id,org_id,name,log_bodies,killed,created_at,allowed_models,denied_models,max_tokens,guardrails,cache_ttl_s`
+const projectCols = `id,org_id,name,log_bodies,killed,created_at,allowed_models,denied_models,max_tokens,guardrails,cache_ttl_s,allowed_features,trust_customer_header`
 
 func scanProject(sc interface{ Scan(...any) error }) (*Project, error) {
 	var p Project
 	var lb, k int
 	var c int64
-	var allow, deny, guard string
-	if err := sc.Scan(&p.ID, &p.OrgID, &p.Name, &lb, &k, &c, &allow, &deny, &p.MaxTokens, &guard, &p.CacheTTLSeconds); err != nil {
+	var allow, deny, guard, feats string
+	var trust int
+	if err := sc.Scan(&p.ID, &p.OrgID, &p.Name, &lb, &k, &c, &allow, &deny, &p.MaxTokens, &guard, &p.CacheTTLSeconds, &feats, &trust); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -157,6 +201,7 @@ func scanProject(sc interface{ Scan(...any) error }) (*Project, error) {
 	}
 	p.LogBodies, p.Killed, p.CreatedAt = lb == 1, k == 1, fromMS(c)
 	p.AllowedModels, p.DeniedModels = splitList(allow), splitList(deny)
+	p.AllowedFeatures, p.TrustCustomerHeader = splitList(feats), trust == 1
 	if guard != "" {
 		var g GuardSettings
 		if json.Unmarshal([]byte(guard), &g) == nil {
@@ -253,6 +298,9 @@ type VirtualKey struct {
 	Revoked   bool      `json:"revoked"`
 	CreatedAt time.Time `json:"created_at"`
 	ModelPolicy
+	// CustomerID binds the key to one end customer: its traffic is always
+	// attributed to it and a different customer header is rejected.
+	CustomerID string `json:"customer_id"`
 }
 
 // CreateKey generates a virtual key; the plaintext is returned once.
@@ -278,14 +326,14 @@ func (s *Store) CreateKey(ctx context.Context, projectID, name, agent, user stri
 	return plain, k, nil
 }
 
-const keyCols = `id,project_id,name,agent,user_label,prefix,killed,revoked,created_at,allowed_models,denied_models,max_tokens`
+const keyCols = `id,project_id,name,agent,user_label,prefix,killed,revoked,created_at,allowed_models,denied_models,max_tokens,customer_id`
 
 func scanKey(sc interface{ Scan(...any) error }) (*VirtualKey, error) {
 	var k VirtualKey
 	var killed, revoked int
 	var c int64
 	var allow, deny string
-	if err := sc.Scan(&k.ID, &k.ProjectID, &k.Name, &k.Agent, &k.UserLabel, &k.Prefix, &killed, &revoked, &c, &allow, &deny, &k.MaxTokens); err != nil {
+	if err := sc.Scan(&k.ID, &k.ProjectID, &k.Name, &k.Agent, &k.UserLabel, &k.Prefix, &killed, &revoked, &c, &allow, &deny, &k.MaxTokens, &k.CustomerID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -521,4 +569,46 @@ WHERE `+refill+` >= 1`, bucket, capacity-1, capacity, nowMS, ratePerMS, ratePerM
 func (s *Store) PruneRateBuckets(ctx context.Context, cutoff time.Time) error {
 	_, err := s.exec(ctx, `DELETE FROM rate_buckets WHERE last_ms < ?`, ms(cutoff))
 	return err
+}
+
+// SetKeyCustomer binds (or with "" unbinds) a key to an end customer.
+func (s *Store) SetKeyCustomer(ctx context.Context, id, customer string) error {
+	return s.execOne(ctx, `UPDATE virtual_keys SET customer_id=? WHERE id=?`, strings.TrimSpace(customer), id)
+}
+
+// KilledAmong returns which of the given keys are killed or revoked and which
+// of the given projects are killed.
+func (s *Store) KilledAmong(ctx context.Context, keyIDs, projectIDs []string) (keys, projects []string, err error) {
+	in := func(n int) string { return "(?" + strings.Repeat(",?", n-1) + ")" }
+	args := func(ids []string) []any {
+		a := make([]any, len(ids))
+		for i, v := range ids {
+			a[i] = v
+		}
+		return a
+	}
+	collect := func(q string, ids []string) ([]string, error) {
+		if len(ids) == 0 {
+			return nil, nil
+		}
+		rows, err := s.query(ctx, q+in(len(ids)), args(ids)...)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return nil, err
+			}
+			out = append(out, id)
+		}
+		return out, rows.Err()
+	}
+	if keys, err = collect(`SELECT id FROM virtual_keys WHERE (killed=1 OR revoked=1) AND id IN `, keyIDs); err != nil {
+		return nil, nil, err
+	}
+	projects, err = collect(`SELECT id FROM projects WHERE killed=1 AND id IN `, projectIDs)
+	return keys, projects, err
 }

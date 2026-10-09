@@ -24,7 +24,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	var req provider.ChatRequest
 	if err := json.Unmarshal(rs.body, &req); err != nil {
-		s.reject(w, rs, http.StatusBadRequest, "invalid_request_error", "invalid_request", "Invalid request: "+err.Error(), 0)
+		s.reject(w, rs, http.StatusBadRequest, "invalid_request_error", "invalid_request", "Invalid request: "+jsonErr(err), 0)
 		return
 	}
 	if len(req.Messages) == 0 {
@@ -72,6 +72,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if plan.route != "" {
 		w.Header().Set("X-OpenGate-Route", plan.route)
 	}
+	if !s.checkChatFeatures(w, rs, &req) {
+		return
+	}
+	// Normalize max_tokens / max_completion_tokens to one field holding the
+	// larger value, so a cap or reservation can't be dodged by sending both.
+	normalizeMaxTokens(&req, rs.raw)
 	cap := tokenCap(rs)
 	if cap > 0 {
 		if mo := req.MaxOutputTokens(); mo > cap {
@@ -86,6 +92,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if outTokens <= 0 {
 		outTokens = s.cfg.DefaultMaxTokens
 	}
+	choices := 1
+	if req.N != nil && *req.N > 1 {
+		choices = *req.N
+	}
+	outTokens *= choices // worst case covers every choice
 	ttl := s.cacheTTL(rs)
 	cacheKey := ""
 	if ttl > 0 {
@@ -392,6 +403,9 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.checkResponsesFeatures(w, rs) {
+		return
+	}
 	var maxOut int
 	_ = json.Unmarshal(rs.raw["max_output_tokens"], &maxOut)
 	cap := tokenCap(rs)
@@ -430,6 +444,12 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.writeUpstreamFailure(ctx, w, rs, err)
 			return
+		}
+		if !res.UsageReported {
+			// No usage (e.g. background mode): charge the worst case rather
+			// than ~0, since generation may continue upstream.
+			res.Usage, res.UsageReported = provider.Usage{PromptTokens: promptEst, CompletionTokens: maxOut}, true
+			rs.log.UsageEstimated = true
 		}
 		s.price(rs, res.Usage, res.UsageReported, promptEst, 0)
 		body, withhold := s.guardResponse(rs, res.Body)
@@ -565,4 +585,17 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
+}
+
+// jsonErr reduces a decoder error to a short client-safe description.
+func jsonErr(err error) string {
+	var se *json.SyntaxError
+	var te *json.UnmarshalTypeError
+	switch {
+	case errors.As(err, &se):
+		return "malformed JSON"
+	case errors.As(err, &te):
+		return "field " + te.Field + " has the wrong type"
+	}
+	return "could not parse request body"
 }

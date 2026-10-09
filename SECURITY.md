@@ -30,4 +30,16 @@ Until 1.0, only the latest release receives security fixes.
 * Use `opengate keygen` for secrets and rotate the admin token periodically.
 * Leave body logging off unless you need it, and restrict who can read the database file.
 * Use the provided container image (distroless, non-root, read-only filesystem, no capabilities).
-* Review `go.mod`: the project deliberately keeps two direct dependencies.
+* Review `go.mod`: the project deliberately keeps few, pure-Go direct dependencies.
+* Behind a reverse proxy, set `trust_proxy_headers: true` **and** `trusted_proxies` to the proxy's CIDRs.
+* Give Prometheus its own `OPENGATE_METRICS_TOKEN`.
+* Set `budgets.strict: true` and a limit on every key, keep a `default:` price in custom pricing files, and consider `max_inflight`.
+* Leave `trust_customer_header` off unless only your own backend holds the project's keys; prefer keys bound to a customer.
+* For hard limits to the cent, run a single replica (see the README section on multiple replicas).
+
+## Security review log
+
+An internal review on 2026-10-09 (commit a88287b) found no critical issues. Its HIGH finding (org scoping of the
+phase-1 admin API), all MEDIUM findings and most LOW findings were fixed before v1.0.0, with regression tests in
+`integration/security_test.go`. Known residual items: per-process budget reservations on multi-replica
+deployments (documented), no response-side guard scan for streaming `/v1/responses`, and no master-key rotation command.

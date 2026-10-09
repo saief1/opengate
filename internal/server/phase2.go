@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/opengate-dev/opengate/internal/billing"
+	"github.com/opengate-dev/opengate/internal/budget"
 	"github.com/opengate-dev/opengate/internal/guard"
 	"github.com/opengate-dev/opengate/internal/pricing"
 	"github.com/opengate-dev/opengate/internal/provider"
@@ -62,18 +63,27 @@ func validCustomerID(id string) bool {
 	return true
 }
 
-// customerID resolves the end-customer from the header or the OpenAI
-// "user" field.
-func (s *Server) customerID(r *http.Request, raw map[string]json.RawMessage) string {
-	id := strings.TrimSpace(r.Header.Get(s.cfg.Billing.CustomerHeader))
-	if id == "" && !s.cfg.Billing.IgnoreUserField {
-		_ = json.Unmarshal(raw["user"], &id)
-		id = strings.TrimSpace(id)
+// customerID resolves the end customer. A key bound to a customer always
+// uses it (and rejects a conflicting assertion). Otherwise the header / the
+// OpenAI "user" field is honored only when the project trusts it, because
+// any key holder can set them.
+func (s *Server) customerID(r *http.Request, key *store.VirtualKey, proj *store.Project, raw map[string]json.RawMessage) (string, error) {
+	asserted := strings.TrimSpace(r.Header.Get(s.cfg.Billing.CustomerHeader))
+	fromHeader := asserted != ""
+	if asserted == "" && !s.cfg.Billing.IgnoreUserField {
+		_ = json.Unmarshal(raw["user"], &asserted)
+		asserted = strings.TrimSpace(asserted)
 	}
-	if !validCustomerID(id) {
-		return ""
+	if key.CustomerID != "" {
+		if fromHeader && asserted != key.CustomerID {
+			return "", fmt.Errorf("this key is bound to a different customer")
+		}
+		return key.CustomerID, nil
 	}
-	return id
+	if !proj.TrustCustomerHeader || !validCustomerID(asserted) {
+		return "", nil
+	}
+	return asserted, nil
 }
 
 // bill applies markup rules to the final cost.
@@ -417,8 +427,8 @@ func (s *Server) cacheTTL(rs *reqState) time.Duration {
 		return 0
 	}
 	h := strings.ToLower(strings.TrimSpace(rs.r.Header.Get("X-OpenGate-Cache")))
-	if h == "off" || h == "no-store" || h == "bypass" {
-		return 0
+	if h == "off" || h == "no-store" || h == "bypass" || rs.proj.CacheTTLSeconds <= 0 {
+		return 0 // caching must be enabled for the project; clients cannot opt in alone
 	}
 	ttl := time.Duration(rs.proj.CacheTTLSeconds) * time.Second
 	if v := rs.r.Header.Get("X-OpenGate-Cache-TTL"); v != "" {
@@ -437,7 +447,10 @@ func (s *Server) cacheKey(rs *reqState) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "v1\x00%s\x00%s\x00", rs.proj.ID, rs.log.Endpoint)
 	if !s.cfg.Cache.ShareAcrossCustomers {
-		fmt.Fprintf(h, "%s\x00", rs.log.CustomerID)
+		fmt.Fprintf(h, "c:%s\x00", rs.log.CustomerID)
+	}
+	if !s.cfg.Cache.ShareAcrossKeys {
+		fmt.Fprintf(h, "k:%s\x00", rs.key.ID)
 	}
 	h.Write(canon)
 	return hex.EncodeToString(h.Sum(nil))
@@ -449,6 +462,17 @@ func (s *Server) serveCached(w http.ResponseWriter, rs *reqState, key string) bo
 	if err != nil {
 		return false
 	}
+	// Hits are free but still count against rate limits and require the
+	// key to be within budget.
+	res, denial, err := s.enforcer.Reserve(rs.r.Context(), budget.ScopesFor(rs.key, rs.proj), 0)
+	if err != nil || denial != nil {
+		if denial != nil {
+			s.reject(w, rs, denial.Status, denial.Type, denial.Code, denial.Message, denial.RetryAfter)
+			return true
+		}
+		return false
+	}
+	rs.res = res
 	l := rs.log
 	l.Provider, l.ProviderModel, l.CacheHit, l.Status = e.Provider, e.ProviderModel, true, http.StatusOK
 	l.CostUSD, l.BaselineCostUSD = 0, e.CostUSD

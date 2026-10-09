@@ -29,6 +29,7 @@ type ChatRequest struct {
 	Tools               []Tool          `json:"tools,omitempty"`
 	ToolChoice          json.RawMessage `json:"tool_choice,omitempty"`
 	User                string          `json:"user,omitempty"`
+	N                   *int            `json:"n,omitempty"`
 }
 
 // StreamOptions mirrors OpenAI's stream_options.
@@ -107,15 +108,17 @@ func (r *ChatRequest) StopSequences() []string {
 	return many
 }
 
-// MaxOutputTokens returns max_completion_tokens or max_tokens (0 if unset).
+// MaxOutputTokens returns the larger of max_completion_tokens and
+// max_tokens (0 if neither is set), so sending both can't dodge a cap.
 func (r *ChatRequest) MaxOutputTokens() int {
+	n := 0
 	if r.MaxCompletionTokens != nil {
-		return *r.MaxCompletionTokens
+		n = *r.MaxCompletionTokens
 	}
-	if r.MaxTokens != nil {
-		return *r.MaxTokens
+	if r.MaxTokens != nil && *r.MaxTokens > n {
+		n = *r.MaxTokens
 	}
-	return 0
+	return n
 }
 
 // Tool is an OpenAI function tool.
