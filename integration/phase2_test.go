@@ -408,3 +408,16 @@ func TestResponseCache(t *testing.T) {
 		t.Fatal("purge should empty the cache")
 	}
 }
+
+// Regression: a routing rule matching a request for the "auto" alias (so no
+// auto classification ran) used to dereference a nil class and panic.
+func TestRuleMatchingAutoAliasDoesNotPanic(t *testing.T) {
+	e := setupWith(t, withAuto)
+	key, _, _ := e.newKey("auto-rule", "", nil)
+	e.admin("POST", "/admin/api/routing/rules", map[string]any{"name": "long", "priority": 1,
+		"match": map[string]any{"min_prompt_tokens": 5}, "target": "gemini/gemini-2.5-flash"}, 200)
+	r := e.chat(key, map[string]any{"model": "auto", "messages": msgs("a reasonably long prompt that certainly crosses five tokens")})
+	if decodeJSON(t, r); r.StatusCode != 200 || r.Header.Get("X-OpenGate-Route") == "" {
+		t.Fatalf("status %d route %q", r.StatusCode, r.Header.Get("X-OpenGate-Route"))
+	}
+}

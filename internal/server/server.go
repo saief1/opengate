@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -299,7 +300,7 @@ func (s *Server) recoverer(next http.Handler) http.Handler {
 				if v == http.ErrAbortHandler {
 					panic(v)
 				}
-				s.log.Error("panic", "err", v, "path", r.URL.Path)
+				s.log.Error("panic", "err", v, "path", r.URL.Path, "stack", string(debug.Stack()))
 				writeError(w, http.StatusInternalServerError, "server_error", "internal_error", "internal server error")
 			}
 		}()

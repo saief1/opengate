@@ -48,7 +48,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		var allowed []targetSpec
 		for _, t := range targets {
 			name := t.String()
-			if s.autoEnabled(req.Model) && plan.route == "auto:t"+strconv.Itoa(int(plan.class.Tier)) {
+			if s.autoEnabled(req.Model) && plan.class != nil && plan.route == "auto:t"+strconv.Itoa(int(plan.class.Tier)) {
 				name = req.Model // allowing "auto" allows what it picks
 			}
 			if policyAllows(rs.key.ModelPolicy, name, t) && policyAllows(rs.proj.ModelPolicy, name, t) {

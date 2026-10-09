@@ -467,10 +467,10 @@ Object.assign(pages, {
     };
     root.append(
       el("div", { class: "grid stats" },
-        el("div", { class: "card stat saved" }, el("div", { class: "label" }, "Saved by routing (30 days)"), el("div", { class: "value" }, usd(saved)), el("div", { class: "sub" }, "vs. the requested model")),
+        el("div", { class: "card stat saved" }, el("div", { class: "label" }, "Saved by routing (30 days)"), el("div", { class: "value" }, usdSmart(saved)), el("div", { class: "sub" }, "vs. the requested model")),
         el("div", { class: "card stat" }, el("div", { class: "label" }, "Routed requests (30 days)"), el("div", { class: "value" }, num((rules.stats_30d || []).reduce((a, r) => a + r.requests, 0))), el("div", { class: "sub" }, rules.data.length + " rules")),
         el("div", { class: "card stat" }, el("div", { class: "label" }, "auto alias"), el("div", { class: "value" }, auto.enabled ? auto.alias : "off"), el("div", { class: "sub" }, auto.enabled ? "baseline " + auto.baseline : "smart_routing.auto in config")),
-        el("div", { class: "card stat saved" }, el("div", { class: "label" }, "Saved by cache (30 days)"), el("div", { class: "value" }, usd(ov.range.cache_saved_usd)), el("div", { class: "sub" }, num(ov.range.cache_hits) + " hits")),
+        el("div", { class: "card stat saved" }, el("div", { class: "label" }, "Saved by cache (30 days)"), el("div", { class: "value" }, usdSmart(ov.range.cache_saved_usd)), el("div", { class: "sub" }, num(ov.range.cache_hits) + " hits")),
         el("div", { class: "card stat" }, el("div", { class: "label" }, "Spend (30 days)"), el("div", { class: "value" }, usd(ov.range.cost_usd)), el("div", { class: "sub" }, num(ov.range.requests) + " requests"))),
       card("Routing rules — first match by priority wins", table(["#Prio", "Rule", "When", "Route to", "#Req 30d", "#Saved", "On", ""], rrows, "No rules yet. Example: send prompts over 4,000 tokens to a long-context cheap model, or everything tagged 'batch' to a mini model.")),
       el("div", { class: "grid half section-gap" },
@@ -554,9 +554,9 @@ Object.assign(pages, {
     root.append(
       el("div", { class: "grid stats" },
         el("div", { class: "card stat" }, el("div", { class: "label" }, "Customers billed " + month), el("div", { class: "value" }, num(c.data.filter((r) => r.requests).length)), el("div", { class: "sub" }, "via " + c.header + " or the user field")),
-        el("div", { class: "card stat" }, el("div", { class: "label" }, "Provider cost"), el("div", { class: "value" }, usd(tot.cost)), el("div", { class: "sub" }, num(tot.req) + " requests")),
-        el("div", { class: "card stat" }, el("div", { class: "label" }, "Billable to customers"), el("div", { class: "value" }, usd(tot.billed)), el("div", { class: "sub" }, "after markup rules")),
-        el("div", { class: "card stat saved" }, el("div", { class: "label" }, "Gross margin"), el("div", { class: "value" }, usd(tot.billed - tot.cost)), el("div", { class: "sub" }, tot.billed ? Math.round(((tot.billed - tot.cost) / tot.billed) * 100) + "% of billings" : "—")),
+        el("div", { class: "card stat" }, el("div", { class: "label" }, "Provider cost"), el("div", { class: "value" }, usdSmart(tot.cost)), el("div", { class: "sub" }, num(tot.req) + " requests")),
+        el("div", { class: "card stat" }, el("div", { class: "label" }, "Billable to customers"), el("div", { class: "value" }, usdSmart(tot.billed)), el("div", { class: "sub" }, "after markup rules")),
+        el("div", { class: "card stat saved" }, el("div", { class: "label" }, "Gross margin"), el("div", { class: "value" }, usdSmart(tot.billed - tot.cost)), el("div", { class: "sub" }, tot.billed ? Math.round(((tot.billed - tot.cost) / tot.billed) * 100) + "% of billings" : "—")),
         el("div", { class: "card stat" }, el("div", { class: "label" }, "Stripe usage sync"), el("div", { class: "value" }, st.enabled ? "on" : "off"), el("div", { class: "sub" }, st.enabled ? `meter "${st.event_name}" · ${st.unit}` : "billing.stripe + STRIPE_API_KEY"))),
       card("Usage by end customer", table(["Customer", "Project", "Stripe", "#Requests", "#Tokens", "#Cost", "#Billed", "#Margin", ""], rows, "No customer-attributed traffic this month. Send X-OpenGate-Customer: <id> (or the OpenAI user field).")),
       el("div", { class: "grid half section-gap" },
