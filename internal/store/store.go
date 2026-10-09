@@ -1,5 +1,3 @@
-// Package store persists OpenGate state in SQLite using the pure-Go
-// modernc.org/sqlite driver (no CGO, so the binary stays static).
 package store
 
 import (
@@ -7,139 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
-
 	"github.com/opengate-dev/opengate/internal/secure"
 )
-
-// ErrNotFound is returned when a row does not exist.
-var ErrNotFound = errors.New("not found")
-
-// Store wraps the SQLite database.
-type Store struct {
-	db *sql.DB
-}
-
-// Open opens (and migrates) the database at path. Use ":memory:" for tests.
-func Open(path string) (*Store, error) {
-	q := url.Values{}
-	for _, p := range []string{"busy_timeout(10000)", "journal_mode(WAL)", "foreign_keys(1)", "synchronous(NORMAL)"} {
-		q.Add("_pragma", p)
-	}
-	dsn := "file:" + path + "?" + q.Encode()
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, err
-	}
-	if path == ":memory:" {
-		db.SetMaxOpenConns(1) // each connection would otherwise get its own memory DB
-	}
-	s := &Store{db: db}
-	if err := s.migrate(context.Background()); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
-	}
-	return s, nil
-}
-
-// Close closes the database.
-func (s *Store) Close() error { return s.db.Close() }
-
-const schemaV1 = `
-CREATE TABLE IF NOT EXISTS projects (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL UNIQUE,
-  log_bodies INTEGER NOT NULL DEFAULT 0,
-  killed INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS virtual_keys (
-  id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL REFERENCES projects(id),
-  name TEXT NOT NULL,
-  agent TEXT NOT NULL DEFAULT '',
-  user_label TEXT NOT NULL DEFAULT '',
-  key_hash TEXT NOT NULL UNIQUE,
-  prefix TEXT NOT NULL,
-  killed INTEGER NOT NULL DEFAULT 0,
-  revoked INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS limits (
-  scope TEXT NOT NULL,
-  scope_id TEXT NOT NULL,
-  daily_usd REAL NOT NULL DEFAULT 0,
-  monthly_usd REAL NOT NULL DEFAULT 0,
-  total_usd REAL NOT NULL DEFAULT 0,
-  rpm INTEGER NOT NULL DEFAULT 0,
-  updated_at INTEGER NOT NULL,
-  PRIMARY KEY (scope, scope_id)
-);
-CREATE TABLE IF NOT EXISTS provider_keys (
-  id TEXT PRIMARY KEY,
-  provider TEXT NOT NULL,
-  label TEXT NOT NULL DEFAULT '',
-  hint TEXT NOT NULL DEFAULT '',
-  ciphertext TEXT NOT NULL,
-  created_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS request_logs (
-  id TEXT PRIMARY KEY,
-  ts INTEGER NOT NULL,
-  project_id TEXT NOT NULL,
-  key_id TEXT NOT NULL,
-  agent TEXT NOT NULL DEFAULT '',
-  user_label TEXT NOT NULL DEFAULT '',
-  model TEXT NOT NULL DEFAULT '',
-  provider TEXT NOT NULL DEFAULT '',
-  provider_model TEXT NOT NULL DEFAULT '',
-  prompt_tokens INTEGER NOT NULL DEFAULT 0,
-  completion_tokens INTEGER NOT NULL DEFAULT 0,
-  cost_usd REAL NOT NULL DEFAULT 0,
-  latency_ms INTEGER NOT NULL DEFAULT 0,
-  status INTEGER NOT NULL,
-  error_code TEXT NOT NULL DEFAULT '',
-  error_message TEXT NOT NULL DEFAULT '',
-  stream INTEGER NOT NULL DEFAULT 0,
-  attempts INTEGER NOT NULL DEFAULT 0,
-  usage_estimated INTEGER NOT NULL DEFAULT 0,
-  request_body TEXT,
-  response_body TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_logs_ts ON request_logs(ts);
-CREATE INDEX IF NOT EXISTS idx_logs_key_ts ON request_logs(key_id, ts);
-CREATE INDEX IF NOT EXISTS idx_logs_project_ts ON request_logs(project_id, ts);
-CREATE INDEX IF NOT EXISTS idx_logs_agent_ts ON request_logs(project_id, agent, ts);
-CREATE TABLE IF NOT EXISTS alerts_sent (
-  scope TEXT NOT NULL,
-  scope_id TEXT NOT NULL,
-  period TEXT NOT NULL,
-  period_start INTEGER NOT NULL,
-  threshold REAL NOT NULL,
-  sent_at INTEGER NOT NULL,
-  PRIMARY KEY (scope, scope_id, period, period_start, threshold)
-);
-`
-
-func (s *Store) migrate(ctx context.Context) error {
-	var v int
-	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&v); err != nil {
-		return err
-	}
-	if v < 1 {
-		if _, err := s.db.ExecContext(ctx, schemaV1); err != nil {
-			return err
-		}
-		if _, err := s.db.ExecContext(ctx, "PRAGMA user_version = 1"); err != nil {
-			return err
-		}
-	}
-	return nil
-}
 
 func ms(t time.Time) int64 { return t.UnixMilli() }
 func fromMS(v int64) time.Time {
@@ -154,26 +24,70 @@ func b2i(b bool) int {
 
 // ---------- Projects ----------
 
+// DefaultOrgID is the organization every single-tenant install uses.
+const DefaultOrgID = "org_default"
+
+// ModelPolicy restricts which models a key/project may call and caps
+// max_tokens. Patterns are exact names or prefixes ending in '*', matched
+// against both the requested model/alias and the resolved provider/model.
+type ModelPolicy struct {
+	AllowedModels []string `json:"allowed_models"`
+	DeniedModels  []string `json:"denied_models"`
+	MaxTokens     int      `json:"max_tokens"`
+}
+
+func joinList(v []string) string {
+	var out []string
+	for _, s := range v {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return strings.Join(out, ",")
+}
+
+func splitList(v string) []string {
+	if v == "" {
+		return []string{}
+	}
+	return strings.Split(v, ",")
+}
+
+func isUnique(err error) bool {
+	return err != nil && (strings.Contains(err.Error(), "UNIQUE") || strings.Contains(err.Error(), "duplicate key"))
+}
+
 // Project groups virtual keys, budgets and logs.
 type Project struct {
 	ID        string    `json:"id"`
+	OrgID     string    `json:"org_id"`
 	Name      string    `json:"name"`
 	LogBodies bool      `json:"log_bodies"`
 	Killed    bool      `json:"killed"`
 	CreatedAt time.Time `json:"created_at"`
+	ModelPolicy
 }
 
 // CreateProject inserts a new project.
 func (s *Store) CreateProject(ctx context.Context, name string, logBodies bool) (*Project, error) {
+	return s.CreateProjectInOrg(ctx, DefaultOrgID, name, logBodies)
+}
+
+// CreateProjectInOrg inserts a new project owned by an organization.
+func (s *Store) CreateProjectInOrg(ctx context.Context, orgID, name string, logBodies bool) (*Project, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, errors.New("project name is required")
 	}
-	p := &Project{ID: secure.RandomID("prj_"), Name: name, LogBodies: logBodies, CreatedAt: time.Now().UTC()}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO projects(id,name,log_bodies,killed,created_at) VALUES(?,?,?,0,?)`,
-		p.ID, p.Name, b2i(logBodies), ms(p.CreatedAt))
+	if orgID == "" {
+		orgID = DefaultOrgID
+	}
+	p := &Project{ID: secure.RandomID("prj_"), OrgID: orgID, Name: name, LogBodies: logBodies, CreatedAt: time.Now().UTC(),
+		ModelPolicy: ModelPolicy{AllowedModels: []string{}, DeniedModels: []string{}}}
+	_, err := s.exec(ctx, `INSERT INTO projects(id,org_id,name,log_bodies,killed,created_at) VALUES(?,?,?,?,0,?)`,
+		p.ID, p.OrgID, p.Name, b2i(logBodies), ms(p.CreatedAt))
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE") {
+		if isUnique(err) {
 			return nil, fmt.Errorf("project %q already exists", name)
 		}
 		return nil, err
@@ -193,35 +107,61 @@ func (s *Store) EnsureProject(ctx context.Context, name string) (*Project, error
 	return s.CreateProject(ctx, name, false)
 }
 
-const projectCols = `id,name,log_bodies,killed,created_at`
+const projectCols = `id,org_id,name,log_bodies,killed,created_at,allowed_models,denied_models,max_tokens`
 
 func scanProject(sc interface{ Scan(...any) error }) (*Project, error) {
 	var p Project
 	var lb, k int
 	var c int64
-	if err := sc.Scan(&p.ID, &p.Name, &lb, &k, &c); err != nil {
+	var allow, deny string
+	if err := sc.Scan(&p.ID, &p.OrgID, &p.Name, &lb, &k, &c, &allow, &deny, &p.MaxTokens); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
 	p.LogBodies, p.Killed, p.CreatedAt = lb == 1, k == 1, fromMS(c)
+	p.AllowedModels, p.DeniedModels = splitList(allow), splitList(deny)
 	return &p, nil
 }
 
 // GetProject fetches a project by id.
 func (s *Store) GetProject(ctx context.Context, id string) (*Project, error) {
-	return scanProject(s.db.QueryRowContext(ctx, `SELECT `+projectCols+` FROM projects WHERE id=?`, id))
+	return scanProject(s.queryRow(ctx, `SELECT `+projectCols+` FROM projects WHERE id=?`, id))
 }
 
-// ProjectByName fetches a project by name.
+// ProjectByName fetches a project by name in the default organization.
 func (s *Store) ProjectByName(ctx context.Context, name string) (*Project, error) {
-	return scanProject(s.db.QueryRowContext(ctx, `SELECT `+projectCols+` FROM projects WHERE name=?`, name))
+	return s.ProjectByNameInOrg(ctx, DefaultOrgID, name)
 }
 
-// ListProjects lists all projects.
+// ProjectByNameInOrg fetches a project by name within an organization.
+func (s *Store) ProjectByNameInOrg(ctx context.Context, orgID, name string) (*Project, error) {
+	return scanProject(s.queryRow(ctx, `SELECT `+projectCols+` FROM projects WHERE org_id=? AND name=?`, orgID, name))
+}
+
+// SetProjectPolicy replaces a project's model policy.
+func (s *Store) SetProjectPolicy(ctx context.Context, id string, p ModelPolicy) error {
+	if p.MaxTokens < 0 {
+		return errors.New("max_tokens must not be negative")
+	}
+	return s.execOne(ctx, `UPDATE projects SET allowed_models=?, denied_models=?, max_tokens=? WHERE id=?`,
+		joinList(p.AllowedModels), joinList(p.DeniedModels), p.MaxTokens, id)
+}
+
+// ListProjects lists all projects (all organizations).
 func (s *Store) ListProjects(ctx context.Context) ([]*Project, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+projectCols+` FROM projects ORDER BY created_at`)
+	return s.ListProjectsInOrg(ctx, "")
+}
+
+// ListProjectsInOrg lists projects of one organization ("" = all).
+func (s *Store) ListProjectsInOrg(ctx context.Context, orgID string) ([]*Project, error) {
+	q, args := `SELECT `+projectCols+` FROM projects`, []any{}
+	if orgID != "" {
+		q += ` WHERE org_id=?`
+		args = append(args, orgID)
+	}
+	rows, err := s.query(ctx, q+` ORDER BY created_at`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -248,7 +188,7 @@ func (s *Store) SetProjectKilled(ctx context.Context, id string, killed bool) er
 }
 
 func (s *Store) execOne(ctx context.Context, q string, args ...any) error {
-	res, err := s.db.ExecContext(ctx, q, args...)
+	res, err := s.exec(ctx, q, args...)
 	if err != nil {
 		return err
 	}
@@ -271,6 +211,7 @@ type VirtualKey struct {
 	Killed    bool      `json:"killed"`
 	Revoked   bool      `json:"revoked"`
 	CreatedAt time.Time `json:"created_at"`
+	ModelPolicy
 }
 
 // CreateKey generates a virtual key; the plaintext is returned once.
@@ -286,8 +227,9 @@ func (s *Store) CreateKey(ctx context.Context, projectID, name, agent, user stri
 		name = "key"
 	}
 	k := &VirtualKey{ID: secure.RandomID("key_"), ProjectID: projectID, Name: strings.TrimSpace(name),
-		Agent: strings.TrimSpace(agent), UserLabel: strings.TrimSpace(user), Prefix: secure.DisplayPrefix(plain), CreatedAt: time.Now().UTC()}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO virtual_keys(id,project_id,name,agent,user_label,key_hash,prefix,created_at) VALUES(?,?,?,?,?,?,?,?)`,
+		Agent: strings.TrimSpace(agent), UserLabel: strings.TrimSpace(user), Prefix: secure.DisplayPrefix(plain), CreatedAt: time.Now().UTC(),
+		ModelPolicy: ModelPolicy{AllowedModels: []string{}, DeniedModels: []string{}}}
+	_, err = s.exec(ctx, `INSERT INTO virtual_keys(id,project_id,name,agent,user_label,key_hash,prefix,created_at) VALUES(?,?,?,?,?,?,?,?)`,
 		k.ID, k.ProjectID, k.Name, k.Agent, k.UserLabel, secure.HashKey(plain), k.Prefix, ms(k.CreatedAt))
 	if err != nil {
 		return "", nil, err
@@ -295,30 +237,32 @@ func (s *Store) CreateKey(ctx context.Context, projectID, name, agent, user stri
 	return plain, k, nil
 }
 
-const keyCols = `id,project_id,name,agent,user_label,prefix,killed,revoked,created_at`
+const keyCols = `id,project_id,name,agent,user_label,prefix,killed,revoked,created_at,allowed_models,denied_models,max_tokens`
 
 func scanKey(sc interface{ Scan(...any) error }) (*VirtualKey, error) {
 	var k VirtualKey
 	var killed, revoked int
 	var c int64
-	if err := sc.Scan(&k.ID, &k.ProjectID, &k.Name, &k.Agent, &k.UserLabel, &k.Prefix, &killed, &revoked, &c); err != nil {
+	var allow, deny string
+	if err := sc.Scan(&k.ID, &k.ProjectID, &k.Name, &k.Agent, &k.UserLabel, &k.Prefix, &killed, &revoked, &c, &allow, &deny, &k.MaxTokens); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
 	k.Killed, k.Revoked, k.CreatedAt = killed == 1, revoked == 1, fromMS(c)
+	k.AllowedModels, k.DeniedModels = splitList(allow), splitList(deny)
 	return &k, nil
 }
 
 // KeyByHash looks up a key by the hash of its plaintext.
 func (s *Store) KeyByHash(ctx context.Context, hash string) (*VirtualKey, error) {
-	return scanKey(s.db.QueryRowContext(ctx, `SELECT `+keyCols+` FROM virtual_keys WHERE key_hash=?`, hash))
+	return scanKey(s.queryRow(ctx, `SELECT `+keyCols+` FROM virtual_keys WHERE key_hash=?`, hash))
 }
 
 // GetKey fetches a key by id.
 func (s *Store) GetKey(ctx context.Context, id string) (*VirtualKey, error) {
-	return scanKey(s.db.QueryRowContext(ctx, `SELECT `+keyCols+` FROM virtual_keys WHERE id=?`, id))
+	return scanKey(s.queryRow(ctx, `SELECT `+keyCols+` FROM virtual_keys WHERE id=?`, id))
 }
 
 // ListKeys lists keys, optionally for a single project.
@@ -329,7 +273,7 @@ func (s *Store) ListKeys(ctx context.Context, projectID string) ([]*VirtualKey, 
 		q += ` WHERE project_id=?`
 		args = append(args, projectID)
 	}
-	rows, err := s.db.QueryContext(ctx, q+` ORDER BY created_at`, args...)
+	rows, err := s.query(ctx, q+` ORDER BY created_at`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -348,6 +292,15 @@ func (s *Store) ListKeys(ctx context.Context, projectID string) ([]*VirtualKey, 
 // SetKeyKilled flips a key's kill switch.
 func (s *Store) SetKeyKilled(ctx context.Context, id string, killed bool) error {
 	return s.execOne(ctx, `UPDATE virtual_keys SET killed=? WHERE id=?`, b2i(killed), id)
+}
+
+// SetKeyPolicy replaces a key's model policy.
+func (s *Store) SetKeyPolicy(ctx context.Context, id string, p ModelPolicy) error {
+	if p.MaxTokens < 0 {
+		return errors.New("max_tokens must not be negative")
+	}
+	return s.execOne(ctx, `UPDATE virtual_keys SET allowed_models=?, denied_models=?, max_tokens=? WHERE id=?`,
+		joinList(p.AllowedModels), joinList(p.DeniedModels), p.MaxTokens, id)
 }
 
 // RevokeKey permanently disables a key.
@@ -388,7 +341,7 @@ func (s *Store) UpsertLimit(ctx context.Context, l Limit) error {
 	if l.DailyUSD < 0 || l.MonthlyUSD < 0 || l.TotalUSD < 0 || l.RPM < 0 {
 		return errors.New("limits must not be negative")
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO limits(scope,scope_id,daily_usd,monthly_usd,total_usd,rpm,updated_at) VALUES(?,?,?,?,?,?,?)
+	_, err := s.exec(ctx, `INSERT INTO limits(scope,scope_id,daily_usd,monthly_usd,total_usd,rpm,updated_at) VALUES(?,?,?,?,?,?,?)
 ON CONFLICT(scope,scope_id) DO UPDATE SET daily_usd=excluded.daily_usd, monthly_usd=excluded.monthly_usd, total_usd=excluded.total_usd, rpm=excluded.rpm, updated_at=excluded.updated_at`,
 		l.Scope, l.ScopeID, l.DailyUSD, l.MonthlyUSD, l.TotalUSD, l.RPM, ms(time.Now()))
 	return err
@@ -401,7 +354,7 @@ func (s *Store) DeleteLimit(ctx context.Context, scope, scopeID string) error {
 
 // ListLimits returns all limits.
 func (s *Store) ListLimits(ctx context.Context) ([]Limit, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT scope,scope_id,daily_usd,monthly_usd,total_usd,rpm,updated_at FROM limits ORDER BY scope,scope_id`)
+	rows, err := s.query(ctx, `SELECT scope,scope_id,daily_usd,monthly_usd,total_usd,rpm,updated_at FROM limits ORDER BY scope,scope_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -451,7 +404,7 @@ func (s *Store) AddProviderKey(ctx context.Context, c *secure.Cipher, provider, 
 		return nil, err
 	}
 	pk.Ciphertext = ct
-	_, err = s.db.ExecContext(ctx, `INSERT INTO provider_keys(id,provider,label,hint,ciphertext,created_at) VALUES(?,?,?,?,?,?)`,
+	_, err = s.exec(ctx, `INSERT INTO provider_keys(id,provider,label,hint,ciphertext,created_at) VALUES(?,?,?,?,?,?)`,
 		pk.ID, pk.Provider, pk.Label, pk.Hint, pk.Ciphertext, ms(pk.CreatedAt))
 	if err != nil {
 		return nil, err
@@ -467,7 +420,7 @@ func (s *Store) ListProviderKeys(ctx context.Context, provider string) ([]*Provi
 		q += ` WHERE provider=?`
 		args = append(args, provider)
 	}
-	rows, err := s.db.QueryContext(ctx, q+` ORDER BY created_at DESC, id`, args...)
+	rows, err := s.query(ctx, q+` ORDER BY created_at DESC, id`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -488,4 +441,36 @@ func (s *Store) ListProviderKeys(ctx context.Context, provider string) ([]*Provi
 // DeleteProviderKey removes an upstream key.
 func (s *Store) DeleteProviderKey(ctx context.Context, id string) error {
 	return s.execOne(ctx, `DELETE FROM provider_keys WHERE id=?`, id)
+}
+
+// ---------- Rate limit buckets ----------
+
+// TakeToken atomically refills and consumes one token from a bucket. It
+// returns whether a token was taken and the (refilled) token count before
+// the attempt. The whole operation is one upsert, so concurrent replicas
+// cannot double-spend a token.
+func (s *Store) TakeToken(ctx context.Context, bucket string, capacity, ratePerMS float64, nowMS int64) (bool, float64, error) {
+	refill := s.least() + `(excluded.capacity, rate_buckets.tokens + CAST((excluded.last_ms - rate_buckets.last_ms) AS DOUBLE PRECISION) * CAST(? AS DOUBLE PRECISION))`
+	res, err := s.exec(ctx, `INSERT INTO rate_buckets(bucket,tokens,capacity,last_ms) VALUES(?,?,?,?)
+ON CONFLICT(bucket) DO UPDATE SET tokens = `+refill+` - 1, capacity = excluded.capacity, last_ms = excluded.last_ms
+WHERE `+refill+` >= 1`, bucket, capacity-1, capacity, nowMS, ratePerMS, ratePerMS)
+	if err != nil {
+		return false, 0, err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		return true, 0, nil
+	}
+	var tokens float64
+	var last int64
+	if err := s.queryRow(ctx, `SELECT tokens,last_ms FROM rate_buckets WHERE bucket=?`, bucket).Scan(&tokens, &last); err != nil {
+		return false, 0, err
+	}
+	return false, tokens + float64(nowMS-last)*ratePerMS, nil
+}
+
+// PruneRateBuckets deletes buckets idle since before cutoff (they would be
+// full again anyway).
+func (s *Store) PruneRateBuckets(ctx context.Context, cutoff time.Time) error {
+	_, err := s.exec(ctx, `DELETE FROM rate_buckets WHERE last_ms < ?`, ms(cutoff))
+	return err
 }

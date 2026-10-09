@@ -3,13 +3,22 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X github.com/opengate-dev/opengate/internal/server.Version=$(VERSION)
 export CGO_ENABLED=0
 
-.PHONY: build test test-integration vet fmt run mock demo docker clean zip
+.PHONY: build test test-race test-postgres test-integration vet fmt run mock demo docker clean zip
 
 build: ## Build a static binary into ./bin
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/opengate
 
 test: ## Unit + integration tests
 	go test ./...
+
+test-race: ## Tests with the race detector (needs CGO for -race)
+	CGO_ENABLED=1 go test -race ./...
+
+# Runs the store, budget and integration suites against PostgreSQL. Each test
+# creates (and drops) its own database on this server.
+OPENGATE_TEST_POSTGRES_DSN ?= postgres://opengate:opengate@localhost:5432/postgres?sslmode=disable
+test-postgres: ## Tests against PostgreSQL (OPENGATE_TEST_POSTGRES_DSN)
+	OPENGATE_TEST_POSTGRES_DSN="$(OPENGATE_TEST_POSTGRES_DSN)" go test -count=1 ./internal/store/ ./internal/budget/ ./integration/
 
 test-integration:
 	go test -count=1 -v ./integration/

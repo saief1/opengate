@@ -25,21 +25,70 @@ const (
 
 // Config is the full gateway configuration.
 type Config struct {
-	Listen           string                    `yaml:"listen"`
-	Database         string                    `yaml:"database"`
-	PricingFile      string                    `yaml:"pricing_file"`
-	MaxRequestBytes  int64                     `yaml:"max_request_bytes"`
-	BodyLogMaxBytes  int                       `yaml:"body_log_max_bytes"`
-	DefaultMaxTokens int                       `yaml:"default_max_tokens"`
-	DisableDashboard bool                      `yaml:"disable_dashboard"`
-	Providers        map[string]ProviderConfig `yaml:"providers"`
-	Routes           map[string][]string       `yaml:"routes"`
-	Retry            RetryConfig               `yaml:"retry"`
-	Alerts           AlertsConfig              `yaml:"alerts"`
+	Listen           string `yaml:"listen"`
+	Database         string `yaml:"database"`
+	PricingFile      string `yaml:"pricing_file"`
+	MaxRequestBytes  int64  `yaml:"max_request_bytes"`
+	BodyLogMaxBytes  int    `yaml:"body_log_max_bytes"`
+	DefaultMaxTokens int    `yaml:"default_max_tokens"`
+	DisableDashboard bool   `yaml:"disable_dashboard"`
+	// TrustProxyHeaders uses X-Forwarded-For as the client IP (admin
+	// lockout, audit log). Only enable behind a proxy you control.
+	TrustProxyHeaders bool                      `yaml:"trust_proxy_headers"`
+	Providers         map[string]ProviderConfig `yaml:"providers"`
+	Routes            map[string][]string       `yaml:"routes"`
+	Retry             RetryConfig               `yaml:"retry"`
+	Alerts            AlertsConfig              `yaml:"alerts"`
+	Budgets           BudgetsConfig             `yaml:"budgets"`
+	RateLimit         RateLimitConfig           `yaml:"rate_limit"`
+	Metrics           MetricsConfig             `yaml:"metrics"`
+	Log               LogConfig                 `yaml:"log"`
+	AdminLockout      LockoutConfig             `yaml:"admin_lockout"`
 
 	// Secrets are only ever read from the environment, never from YAML.
-	AdminToken string `yaml:"-"`
-	MasterKey  string `yaml:"-"`
+	AdminToken   string `yaml:"-"`
+	MasterKey    string `yaml:"-"`
+	MetricsToken string `yaml:"-"` // OPENGATE_METRICS_TOKEN; falls back to the admin token
+}
+
+// BudgetsConfig tunes spend enforcement.
+type BudgetsConfig struct {
+	// Strict refuses requests whose worst-case (max_tokens) cost would
+	// exceed the remaining budget. Default false: admit while
+	// committed+reserved spend is under the limit.
+	Strict bool `yaml:"strict"`
+	// SyncInterval re-reads spend from the database so replicas sharing
+	// PostgreSQL converge (default 5s for PostgreSQL, 0 for SQLite).
+	SyncInterval time.Duration `yaml:"sync_interval"`
+}
+
+// RateLimitConfig selects the rate limit backend.
+type RateLimitConfig struct {
+	// Backend is "database" (default; persisted, shared across replicas
+	// when using PostgreSQL) or "memory" (fastest, per process).
+	Backend string `yaml:"backend"`
+}
+
+// MetricsConfig controls the Prometheus endpoint.
+type MetricsConfig struct {
+	// Disabled turns GET /metrics off.
+	Disabled bool `yaml:"disabled"`
+	// Public serves /metrics without a bearer token (only do this when the
+	// port is not reachable from untrusted networks).
+	Public bool `yaml:"public"`
+}
+
+// LogConfig controls structured logging.
+type LogConfig struct {
+	Level  string `yaml:"level"`  // debug|info|warn|error (default info)
+	Format string `yaml:"format"` // json (default) | text
+}
+
+// LockoutConfig throttles failed admin logins per client IP.
+type LockoutConfig struct {
+	MaxFailures int           `yaml:"max_failures"` // default 10
+	Window      time.Duration `yaml:"window"`       // default 5m
+	Lockout     time.Duration `yaml:"lockout"`      // default 15m
 }
 
 // ProviderConfig describes one upstream provider.
@@ -87,6 +136,9 @@ func Default() *Config {
 		Routes:           map[string][]string{},
 		Retry:            RetryConfig{MaxAttempts: 2, InitialBackoff: 250 * time.Millisecond, MaxBackoff: 4 * time.Second},
 		Alerts:           AlertsConfig{Thresholds: []float64{0.8, 1.0}},
+		RateLimit:        RateLimitConfig{Backend: "database"},
+		Log:              LogConfig{Level: "info", Format: "json"},
+		AdminLockout:     LockoutConfig{MaxFailures: 10, Window: 5 * time.Minute, Lockout: 15 * time.Minute},
 	}
 }
 
@@ -162,6 +214,10 @@ func (c *Config) applyEnv() {
 	set(&c.Alerts.WebhookURL, "OPENGATE_ALERT_WEBHOOK_URL")
 	set(&c.AdminToken, "OPENGATE_ADMIN_TOKEN")
 	set(&c.MasterKey, "OPENGATE_MASTER_KEY")
+	set(&c.MetricsToken, "OPENGATE_METRICS_TOKEN")
+	set(&c.Log.Level, "OPENGATE_LOG_LEVEL")
+	set(&c.Log.Format, "OPENGATE_LOG_FORMAT")
+	set(&c.RateLimit.Backend, "OPENGATE_RATE_LIMIT_BACKEND")
 	// OPENGATE_PROVIDER_<NAME>_BASE_URL overrides a provider base URL.
 	for name, p := range c.Providers {
 		key := "OPENGATE_PROVIDER_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_BASE_URL"
@@ -202,6 +258,40 @@ func (c *Config) Normalize() error {
 		c.Alerts.Thresholds = []float64{0.8, 1.0}
 	}
 	sort.Float64s(c.Alerts.Thresholds)
+	switch c.RateLimit.Backend {
+	case "":
+		c.RateLimit.Backend = "database"
+	case "database", "memory":
+	default:
+		return fmt.Errorf("rate_limit.backend: want database|memory, got %q", c.RateLimit.Backend)
+	}
+	if c.Budgets.SyncInterval == 0 && (strings.HasPrefix(c.Database, "postgres://") || strings.HasPrefix(c.Database, "postgresql://")) {
+		c.Budgets.SyncInterval = 5 * time.Second
+	}
+	if c.Budgets.SyncInterval < 0 {
+		c.Budgets.SyncInterval = 0
+	}
+	switch strings.ToLower(c.Log.Level) {
+	case "", "info", "debug", "warn", "error":
+	default:
+		return fmt.Errorf("log.level: want debug|info|warn|error, got %q", c.Log.Level)
+	}
+	switch c.Log.Format {
+	case "":
+		c.Log.Format = "json"
+	case "json", "text":
+	default:
+		return fmt.Errorf("log.format: want json|text, got %q", c.Log.Format)
+	}
+	if c.AdminLockout.MaxFailures <= 0 {
+		c.AdminLockout.MaxFailures = 10
+	}
+	if c.AdminLockout.Window <= 0 {
+		c.AdminLockout.Window = 5 * time.Minute
+	}
+	if c.AdminLockout.Lockout <= 0 {
+		c.AdminLockout.Lockout = 15 * time.Minute
+	}
 	for name, p := range c.Providers {
 		switch p.Type {
 		case TypeOpenAI, TypeAnthropic, TypeGemini, TypeOpenRouter:

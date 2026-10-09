@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -85,12 +86,37 @@ func loadConfig(fs *flag.FlagSet, args []string) (*config.Config, error) {
 	return config.Load(*path)
 }
 
+// newLogger builds the structured logger from config (JSON by default).
+func newLogger(cfg *config.Config) *slog.Logger {
+	var lvl slog.Level
+	_ = lvl.UnmarshalText([]byte(strings.ToUpper(cfg.Log.Level)))
+	opts := &slog.HandlerOptions{Level: lvl}
+	var h slog.Handler = slog.NewJSONHandler(os.Stderr, opts)
+	if cfg.Log.Format == "text" {
+		h = slog.NewTextHandler(os.Stderr, opts)
+	}
+	return slog.New(h).With("service", "opengate")
+}
+
+// redactDSN hides the password of a postgres:// URL for logging.
+func redactDSN(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil || u.User == nil {
+		return dsn
+	}
+	if _, ok := u.User.Password(); ok {
+		u.User = url.UserPassword(u.User.Username(), "xxxxx")
+	}
+	return u.String()
+}
+
 func serve(args []string) error {
-	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	cfg, err := loadConfig(flag.NewFlagSet("serve", flag.ExitOnError), args)
 	if err != nil {
 		return err
 	}
+	log := newLogger(cfg)
+	slog.SetDefault(log)
 	if err := cfg.ValidateSecrets(); err != nil {
 		return fmt.Errorf("%w\n\nRun `opengate keygen` to generate secure values", err)
 	}
@@ -104,7 +130,7 @@ func serve(args []string) error {
 	}
 	st, err := store.Open(cfg.Database)
 	if err != nil {
-		return fmt.Errorf("open database %s: %w", cfg.Database, err)
+		return fmt.Errorf("open database %s: %w", redactDSN(cfg.Database), err)
 	}
 	defer st.Close()
 	prices, err := pricing.NewRegistry(cfg.PricingFile)
@@ -117,6 +143,7 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
+	go srv.Run(ctx)
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	go func() {
@@ -131,7 +158,7 @@ func serve(args []string) error {
 	hs := &http.Server{Addr: cfg.Listen, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- hs.ListenAndServe() }()
-	log.Info("OpenGate listening", "addr", cfg.Listen, "version", server.Version, "dashboard", "http://"+cfg.Listen+"/ui/", "pricing", prices.Source(), "database", cfg.Database)
+	log.Info("OpenGate listening", "addr", cfg.Listen, "version", server.Version, "dashboard", "http://"+cfg.Listen+"/ui/", "pricing", prices.Source(), "database", redactDSN(cfg.Database), "db_backend", string(st.Dialect()), "rate_limit_backend", cfg.RateLimit.Backend)
 	select {
 	case err := <-errc:
 		if !errors.Is(err, http.ErrServerClosed) {

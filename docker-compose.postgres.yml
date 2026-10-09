@@ -1,0 +1,29 @@
+# PostgreSQL instead of SQLite (for multiple replicas / managed backups):
+#   echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)" >> .env
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
+# Rate-limit buckets, spend and logs then live in PostgreSQL, so several
+# OpenGate replicas can share one database.
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: opengate
+      POSTGRES_DB: opengate
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - opengate-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opengate"]
+      interval: 5s
+      retries: 10
+
+  opengate:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      OPENGATE_DATABASE: postgres://opengate:${POSTGRES_PASSWORD}@postgres:5432/opengate?sslmode=disable
+
+volumes:
+  opengate-pg:

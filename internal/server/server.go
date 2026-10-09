@@ -61,6 +61,9 @@ type Server struct {
 	inflight *inflight
 	sleep    func(ctx context.Context, d time.Duration) error
 
+	metrics *gatewayMetrics
+	lockout *lockout
+
 	keyMu    sync.Mutex
 	keyCache map[string]string // provider name -> decrypted API key ("" = none)
 }
@@ -79,13 +82,20 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	if o.Sleep == nil {
 		o.Sleep = sleepCtx
 	}
-	enf, err := budget.NewEnforcer(ctx, o.Store, o.Alerter, o.Logger)
+	var rates budget.RateStore = budget.NewRateLimiter()
+	if o.Config.RateLimit.Backend == "database" {
+		rates = budget.NewDBRates(o.Store)
+	}
+	enf, err := budget.NewEnforcer(ctx, o.Store, o.Alerter, o.Logger, budget.Options{
+		Rates: rates, SyncInterval: o.Config.Budgets.SyncInterval, Strict: o.Config.Budgets.Strict})
 	if err != nil {
 		return nil, err
 	}
+	lc := o.Config.AdminLockout
 	s := &Server{cfg: o.Config, store: o.Store, cipher: o.Cipher, pricing: o.Pricing, log: o.Logger, webFS: o.WebFS,
 		enforcer: enf, alerter: o.Alerter, adapters: map[string]provider.Adapter{}, inflight: newInflight(),
-		sleep: o.Sleep, keyCache: map[string]string{}}
+		sleep: o.Sleep, keyCache: map[string]string{}, metrics: newGatewayMetrics(),
+		lockout: newLockout(lc.MaxFailures, lc.Window, lc.Lockout)}
 	for _, t := range []string{config.TypeOpenAI, config.TypeAnthropic, config.TypeGemini, config.TypeOpenRouter} {
 		a, _ := provider.ForType(t, o.HTTP)
 		s.adapters[t] = a
@@ -99,14 +109,40 @@ func New(ctx context.Context, o Options) (*Server, error) {
 // Enforcer exposes the budget enforcer (used by tests and the CLI).
 func (s *Server) Enforcer() *budget.Enforcer { return s.enforcer }
 
+// Run executes background maintenance until ctx is cancelled.
+func (s *Server) Run(ctx context.Context) {
+	t := time.NewTicker(5 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := s.store.PruneRateBuckets(ctx, time.Now().Add(-10*time.Minute)); err != nil {
+				s.log.Warn("prune rate buckets", "err", err)
+			}
+		}
+	}
+}
+
 // Handler returns the root HTTP handler.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChat)
+	mux.HandleFunc("POST /v1/embeddings", s.handleEmbeddings)
+	mux.HandleFunc("POST /v1/responses", s.handleResponses)
 	mux.HandleFunc("GET /v1/models", s.handleModels)
+	// Liveness: the process is up. Readiness: dependencies answer.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": Version})
 	})
+	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("GET /readyz", s.handleReady)
+	if !s.cfg.Metrics.Disabled {
+		mux.HandleFunc("GET /metrics", s.handleMetrics)
+	}
 	s.registerAdmin(mux)
 	if s.webFS != nil && !s.cfg.DisableDashboard {
 		files := http.FileServerFS(s.webFS)
@@ -174,10 +210,12 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w}
 		next.ServeHTTP(rec, r)
-		if strings.HasPrefix(r.URL.Path, "/ui/") {
+		p := r.URL.Path
+		if strings.HasPrefix(p, "/ui/") || p == "/healthz" || p == "/livez" || p == "/readyz" || p == "/metrics" {
 			return
 		}
-		s.log.Info("http", "method", r.Method, "path", r.URL.Path, "status", rec.status, "dur_ms", time.Since(start).Milliseconds())
+		s.log.Info("http", "method", r.Method, "path", p, "status", rec.status, "dur_ms", time.Since(start).Milliseconds(),
+			"request_id", rec.Header().Get("X-OpenGate-Request-Id"), "remote_ip", s.clientIP(r))
 	})
 }
 

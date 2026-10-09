@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -23,6 +22,7 @@ import (
 	"github.com/opengate-dev/opengate/internal/secure"
 	"github.com/opengate-dev/opengate/internal/server"
 	"github.com/opengate-dev/opengate/internal/store"
+	"github.com/opengate-dev/opengate/internal/storetest"
 	"github.com/opengate-dev/opengate/web"
 )
 
@@ -33,11 +33,18 @@ type env struct {
 	gw       *httptest.Server
 	mock     *mockprovider.Mock
 	st       *store.Store
+	cfg      *config.Config
+	cipher   *secure.Cipher
+	srv      *server.Server
 	mu       sync.Mutex
 	webhooks []map[string]any
 }
 
-func setup(t *testing.T) *env {
+func setup(t *testing.T) *env { return setupWith(t, nil) }
+
+// setupWith starts a gateway (SQLite, or PostgreSQL when
+// OPENGATE_TEST_POSTGRES_DSN is set) in front of the mock provider.
+func setupWith(t *testing.T, mutate func(*config.Config)) *env {
 	t.Helper()
 	e := &env{t: t}
 	e.mock = mockprovider.New(mockprovider.Options{ChunkDelay: time.Millisecond})
@@ -66,31 +73,60 @@ func setup(t *testing.T) *env {
 	}
 	cfg.Retry = config.RetryConfig{MaxAttempts: 2, InitialBackoff: time.Millisecond, MaxBackoff: 10 * time.Millisecond}
 	cfg.Alerts.WebhookURL = hook.URL
+	cfg.Database = storetest.DSN(t)
+	if mutate != nil {
+		mutate(cfg)
+	}
 	if err := cfg.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	st, err := store.Open(filepath.Join(t.TempDir(), "og.db"))
+	st, err := store.Open(cfg.Database)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	e.st = st
+	e.st, e.cfg = st, cfg
 	mk, _ := secure.GenerateMasterKey()
 	kb, _ := secure.ParseMasterKey(mk)
-	cipher, _ := secure.NewCipher(kb)
-	prices, _ := pricing.NewRegistry("")
-	srv, err := server.New(context.Background(), server.Options{Config: cfg, Store: st, Cipher: cipher, Pricing: prices,
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), WebFS: web.FS()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	e.gw = httptest.NewServer(srv.Handler())
+	e.cipher, _ = secure.NewCipher(kb)
+	var gw http.Handler
+	e.srv, gw = e.newGateway()
+	e.gw = httptest.NewServer(gw)
 	t.Cleanup(e.gw.Close)
 	// Bring-your-own provider keys, stored encrypted through the admin API.
 	for _, p := range []string{"openai", "anthropic", "gemini", "openrouter"} {
 		e.admin("POST", "/admin/api/provider-keys", map[string]any{"provider": p, "key": "sk-test-" + p + "-123456"}, 201)
 	}
 	return e
+}
+
+// newGateway builds another server instance on the same database (a
+// restart or a second replica).
+func (e *env) newGateway() (*server.Server, http.Handler) {
+	e.t.Helper()
+	prices, _ := pricing.NewRegistry("")
+	srv, err := server.New(context.Background(), server.Options{Config: e.cfg, Store: e.st, Cipher: e.cipher, Pricing: prices,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), WebFS: web.FS()})
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return srv, srv.Handler()
+}
+
+// post sends a JSON request to a gateway endpoint with a virtual key.
+func (e *env) post(path, key string, body any) *http.Response {
+	e.t.Helper()
+	b, _ := json.Marshal(body)
+	req, _ := http.NewRequest("POST", e.gw.URL+path, bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return resp
 }
 
 func (e *env) admin(method, path string, body any, want int) map[string]any {

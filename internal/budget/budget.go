@@ -76,23 +76,55 @@ type spendKey struct {
 	start            int64
 }
 
-// Enforcer checks and records spend. It caches period spend in memory
-// (loaded from SQLite on first use) so checks are cheap.
+type spendEntry struct {
+	v      float64
+	loaded time.Time
+}
+
+// Options tune an Enforcer.
+type Options struct {
+	// Rates is the rate-limit backend (default: in-memory).
+	Rates RateStore
+	// SyncInterval re-reads period spend from the database at most this
+	// often, so several replicas sharing PostgreSQL converge on the same
+	// totals. 0 disables refreshing (single-instance SQLite).
+	SyncInterval time.Duration
+	// Strict denies a request whose reserved worst-case cost would push a
+	// scope past its limit. When false (default) a request is admitted as
+	// long as committed+reserved spend is still below the limit, which caps
+	// overshoot at roughly one request's cost even under heavy concurrency.
+	Strict bool
+}
+
+// Enforcer checks, reserves and records spend. Period spend is cached in
+// memory (loaded from the database on first use) so checks are cheap, and
+// in-flight requests hold reservations so concurrent traffic cannot all
+// pass a check against the same stale total.
 type Enforcer struct {
 	store   *store.Store
 	alerter *Alerter
-	rl      *RateLimiter
+	rates   RateStore
+	opts    Options
 	log     *slog.Logger
 	Now     func() time.Time
 
-	mu     sync.Mutex
-	limits map[Scope]store.Limit // keyed by Kind+ID only (Name empty)
-	spend  map[spendKey]float64
+	mu       sync.Mutex
+	limits   map[Scope]store.Limit // keyed by Kind+ID only (Name empty)
+	spend    map[spendKey]spendEntry
+	reserved map[spendKey]float64
 }
 
 // NewEnforcer builds an enforcer and loads limits.
-func NewEnforcer(ctx context.Context, st *store.Store, alerter *Alerter, log *slog.Logger) (*Enforcer, error) {
-	e := &Enforcer{store: st, alerter: alerter, rl: NewRateLimiter(), log: log, Now: time.Now, spend: map[spendKey]float64{}}
+func NewEnforcer(ctx context.Context, st *store.Store, alerter *Alerter, log *slog.Logger, opts ...Options) (*Enforcer, error) {
+	var o Options
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	if o.Rates == nil {
+		o.Rates = NewRateLimiter()
+	}
+	e := &Enforcer{store: st, alerter: alerter, rates: o.Rates, opts: o, log: log, Now: time.Now,
+		spend: map[spendKey]spendEntry{}, reserved: map[spendKey]float64{}}
 	return e, e.ReloadLimits(ctx)
 }
 
@@ -119,32 +151,75 @@ func (e *Enforcer) limitFor(s Scope) (store.Limit, bool) {
 	return l, ok
 }
 
-// Spend returns the current spend of a scope in a period.
+func (e *Enforcer) key(s Scope, period string, now time.Time) spendKey {
+	return spendKey{s.Kind, s.ID, period, PeriodStart(period, now).UnixMilli()}
+}
+
+// Spend returns the committed spend of a scope in a period.
 func (e *Enforcer) Spend(ctx context.Context, s Scope, period string) (float64, error) {
-	start := PeriodStart(period, e.Now())
-	k := spendKey{s.Kind, s.ID, period, start.UnixMilli()}
+	now := e.Now()
+	k := e.key(s, period, now)
 	e.mu.Lock()
 	v, ok := e.spend[k]
 	e.mu.Unlock()
-	if ok {
-		return v, nil
+	if ok && (e.opts.SyncInterval <= 0 || time.Since(v.loaded) < e.opts.SyncInterval) {
+		return v.v, nil
 	}
-	v, err := e.store.SpendSince(ctx, s.Kind, s.ID, start)
+	fresh, err := e.store.SpendSince(ctx, s.Kind, s.ID, PeriodStart(period, now))
 	if err != nil {
 		return 0, err
 	}
 	e.mu.Lock()
-	if cur, ok := e.spend[k]; ok { // raced with a concurrent loader/recorder
-		v = cur
-	} else {
-		e.spend[k] = v
+	if cur, ok2 := e.spend[k]; ok2 && !ok {
+		fresh = cur.v // raced with a concurrent first load
 	}
+	e.spend[k] = spendEntry{v: fresh, loaded: time.Now()}
 	e.mu.Unlock()
-	return v, nil
+	return fresh, nil
 }
 
-// Check returns a Denial if any scope is over budget or rate limited.
+// Reserved returns the amount currently held by in-flight requests.
+func (e *Enforcer) Reserved(s Scope, period string) float64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.reserved[e.key(s, period, e.Now())]
+}
+
+// Reservation holds estimated cost for an in-flight request. Exactly one of
+// Commit or Release must be called.
+type Reservation struct {
+	e      *Enforcer
+	scopes []Scope
+	keys   []spendKey
+	amount float64
+	once   sync.Once
+}
+
+// Check is Reserve with a zero estimate (kept for callers that only need a
+// yes/no answer); the returned reservation is released immediately.
 func (e *Enforcer) Check(ctx context.Context, scopes []Scope) (*Denial, error) {
+	r, d, err := e.Reserve(ctx, scopes, 0)
+	if r != nil {
+		r.Release()
+	}
+	return d, err
+}
+
+// Reserve atomically checks every applicable limit against committed spend
+// plus outstanding reservations and, if the request is admitted, reserves
+// estimate USD on all scopes. Rate limits are applied afterwards.
+func (e *Enforcer) Reserve(ctx context.Context, scopes []Scope, estimate float64) (*Reservation, *Denial, error) {
+	if estimate < 0 {
+		estimate = 0
+	}
+	now := e.Now()
+	type check struct {
+		s      Scope
+		period string
+		lim    float64
+		k      spendKey
+	}
+	var checks []check
 	for _, s := range scopes {
 		l, ok := e.limitFor(s)
 		if !ok {
@@ -155,32 +230,97 @@ func (e *Enforcer) Check(ctx context.Context, scopes []Scope) (*Denial, error) {
 			if lim <= 0 {
 				continue
 			}
-			spent, err := e.Spend(ctx, s, period)
-			if err != nil {
-				return nil, err
+			// Make sure the committed spend is loaded (and fresh) before locking.
+			if _, err := e.Spend(ctx, s, period); err != nil {
+				return nil, nil, err
 			}
-			if spent >= lim {
-				d := &Denial{Status: http.StatusTooManyRequests, Type: "insufficient_quota", Code: "budget_exceeded",
-					Message: fmt.Sprintf("OpenGate: %s has reached its %s budget ($%.4f of $%.2f). Raise the limit or wait for the period to reset.", s.Name, period, spent, lim)}
-				if period != Total {
-					d.RetryAfter = time.Until(nextPeriod(period, e.Now())).Round(time.Second)
-				}
-				return d, nil
-			}
+			checks = append(checks, check{s, period, lim, e.key(s, period, now)})
 		}
 	}
+	res := &Reservation{e: e, scopes: scopes, amount: estimate}
+	e.mu.Lock()
+	for _, c := range checks {
+		spent := e.spend[c.k].v
+		held := e.reserved[c.k]
+		over := spent+held >= c.lim-1e-9 // epsilon: float sums of reservations
+		if e.opts.Strict && estimate > 0 {
+			over = spent+held+estimate > c.lim+1e-9
+		}
+		if over {
+			e.mu.Unlock()
+			msg := fmt.Sprintf("OpenGate: %s has reached its %s budget ($%.4f of $%.2f", c.s.Name, c.period, spent, c.lim)
+			if held > 0 {
+				msg += fmt.Sprintf(", plus $%.4f reserved by in-flight requests", held)
+			}
+			msg += "). Raise the limit or wait for the period to reset."
+			d := &Denial{Status: http.StatusTooManyRequests, Type: "insufficient_quota", Code: "budget_exceeded", Message: msg}
+			if c.period != Total {
+				d.RetryAfter = time.Until(nextPeriod(c.period, now)).Round(time.Second)
+			}
+			return nil, d, nil
+		}
+	}
+	for _, s := range scopes {
+		for _, period := range []string{Daily, Monthly, Total} {
+			k := e.key(s, period, now)
+			res.keys = append(res.keys, k)
+			e.reserved[k] += estimate
+		}
+	}
+	e.mu.Unlock()
+
 	// Rate limits last, so rejected-for-budget requests don't consume tokens.
 	for _, s := range scopes {
 		l, ok := e.limitFor(s)
 		if !ok || l.RPM <= 0 {
 			continue
 		}
-		if ok, wait := e.rl.Allow(s.Kind+":"+s.ID, l.RPM, e.Now()); !ok {
-			return &Denial{Status: http.StatusTooManyRequests, Type: "rate_limit_error", Code: "rate_limit_exceeded", RetryAfter: wait,
+		allowed, wait, err := e.rates.Allow(ctx, s.Kind+":"+s.ID, l.RPM, now)
+		if err != nil {
+			res.Release()
+			return nil, nil, err
+		}
+		if !allowed {
+			res.Release()
+			return nil, &Denial{Status: http.StatusTooManyRequests, Type: "rate_limit_error", Code: "rate_limit_exceeded", RetryAfter: wait,
 				Message: fmt.Sprintf("OpenGate: rate limit for %s exceeded (%d requests/minute).", s.Name, l.RPM)}, nil
 		}
 	}
-	return nil, nil
+	return res, nil, nil
+}
+
+func (r *Reservation) release() {
+	r.e.mu.Lock()
+	for _, k := range r.keys {
+		v := r.e.reserved[k] - r.amount
+		if v <= 1e-12 {
+			delete(r.e.reserved, k)
+		} else {
+			r.e.reserved[k] = v
+		}
+	}
+	r.e.mu.Unlock()
+}
+
+// Release drops the reservation without recording spend (request failed
+// before any billable upstream usage).
+func (r *Reservation) Release() {
+	if r == nil {
+		return
+	}
+	r.once.Do(r.release)
+}
+
+// Commit replaces the reservation with the actual cost (the log row must
+// already be written) and fires threshold alerts.
+func (r *Reservation) Commit(ctx context.Context, actual float64) {
+	if r == nil {
+		return
+	}
+	r.once.Do(func() {
+		r.release()
+		r.e.Record(ctx, r.scopes, actual)
+	})
 }
 
 func nextPeriod(period string, t time.Time) time.Time {
@@ -200,10 +340,11 @@ func (e *Enforcer) Record(ctx context.Context, scopes []Scope, cost float64) {
 	now := e.Now()
 	for _, s := range scopes {
 		for _, period := range []string{Daily, Monthly, Total} {
-			k := spendKey{s.Kind, s.ID, period, PeriodStart(period, now).UnixMilli()}
+			k := e.key(s, period, now)
 			e.mu.Lock()
 			if v, ok := e.spend[k]; ok {
-				e.spend[k] = v + cost
+				v.v += cost
+				e.spend[k] = v
 			}
 			e.mu.Unlock()
 		}
@@ -256,6 +397,7 @@ type LimitStatus struct {
 	DailySpent   float64 `json:"daily_spent"`
 	MonthlySpent float64 `json:"monthly_spent"`
 	TotalSpent   float64 `json:"total_spent"`
+	Reserved     float64 `json:"reserved"`
 }
 
 // Status reports spend for a limit.
@@ -265,5 +407,6 @@ func (e *Enforcer) Status(ctx context.Context, l store.Limit) LimitStatus {
 	st.DailySpent, _ = e.Spend(ctx, s, Daily)
 	st.MonthlySpent, _ = e.Spend(ctx, s, Monthly)
 	st.TotalSpent, _ = e.Spend(ctx, s, Total)
+	st.Reserved = e.Reserved(s, Total)
 	return st
 }

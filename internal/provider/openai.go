@@ -36,6 +36,13 @@ func (o *OpenAI) body(c *Call, stream bool) ([]byte, error) {
 	}
 	model, _ := json.Marshal(c.Target.Model)
 	m["model"] = model
+	if c.CapTokens > 0 && m["max_tokens"] == nil && m["max_completion_tokens"] == nil {
+		field := "max_completion_tokens" // OpenAI: required for reasoning models
+		if o.openRouter || c.Target.Config.Type != "openai" {
+			field = "max_tokens" // most OpenAI-compatible servers only know max_tokens
+		}
+		m[field], _ = json.Marshal(c.CapTokens)
+	}
 	if stream {
 		m["stream"] = json.RawMessage("true")
 		// Always ask for usage so budgets are exact; the extra chunk is

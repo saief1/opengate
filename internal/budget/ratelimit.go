@@ -1,13 +1,26 @@
 package budget
 
 import (
+	"context"
 	"math"
 	"sync"
 	"time"
+
+	"github.com/opengate-dev/opengate/internal/store"
 )
 
-// RateLimiter is an in-memory token bucket per scope (requests per minute).
-type RateLimiter struct {
+// RateStore is a pluggable token-bucket backend (requests per minute).
+// Implementations: MemoryRates (single instance, lost on restart) and
+// DBRates (SQLite/PostgreSQL, survives restarts and is shared by every
+// OpenGate replica pointing at the same PostgreSQL database).
+type RateStore interface {
+	// Allow consumes one token for key. The bucket holds up to rpm tokens and
+	// refills at rpm/60 per second. When denied it returns the wait time.
+	Allow(ctx context.Context, key string, rpm int, now time.Time) (bool, time.Duration, error)
+}
+
+// MemoryRates is an in-process token bucket store.
+type MemoryRates struct {
 	mu      sync.Mutex
 	buckets map[string]*bucket
 }
@@ -18,12 +31,11 @@ type bucket struct {
 	rpm    int
 }
 
-// NewRateLimiter returns an empty limiter.
-func NewRateLimiter() *RateLimiter { return &RateLimiter{buckets: map[string]*bucket{}} }
+// NewRateLimiter returns an empty in-memory limiter.
+func NewRateLimiter() *MemoryRates { return &MemoryRates{buckets: map[string]*bucket{}} }
 
-// Allow consumes one token for key. The bucket holds up to rpm tokens and
-// refills at rpm/60 per second. When denied it returns the wait time.
-func (r *RateLimiter) Allow(key string, rpm int, now time.Time) (bool, time.Duration) {
+// Allow implements RateStore.
+func (r *MemoryRates) Allow(_ context.Context, key string, rpm int, now time.Time) (bool, time.Duration, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	b, ok := r.buckets[key]
@@ -36,8 +48,29 @@ func (r *RateLimiter) Allow(key string, rpm int, now time.Time) (bool, time.Dura
 	b.last = now
 	if b.tokens >= 1 {
 		b.tokens--
-		return true, 0
+		return true, 0, nil
 	}
-	wait := time.Duration((1 - b.tokens) / rate * float64(time.Second))
-	return false, wait.Round(time.Second) + time.Second
+	return false, waitFor(b.tokens, rate), nil
+}
+
+func waitFor(tokens, ratePerSec float64) time.Duration {
+	wait := time.Duration((1 - tokens) / ratePerSec * float64(time.Second))
+	return wait.Round(time.Second) + time.Second
+}
+
+// DBRates keeps buckets in the database with a single atomic upsert per
+// request, so state survives restarts and is shared across replicas.
+type DBRates struct{ st *store.Store }
+
+// NewDBRates returns a database-backed RateStore.
+func NewDBRates(st *store.Store) *DBRates { return &DBRates{st: st} }
+
+// Allow implements RateStore.
+func (d *DBRates) Allow(ctx context.Context, key string, rpm int, now time.Time) (bool, time.Duration, error) {
+	rate := float64(rpm) / 60.0
+	ok, tokens, err := d.st.TakeToken(ctx, key, float64(rpm), rate/1000.0, now.UnixMilli())
+	if err != nil || ok {
+		return ok, 0, err
+	}
+	return false, waitFor(tokens, rate), nil
 }

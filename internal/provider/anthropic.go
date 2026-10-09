@@ -89,6 +89,14 @@ func (u anthUsage) prompt() int {
 	return u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
 }
 
+// details maps Anthropic cache counters onto OpenAI prompt_tokens_details.
+func (u anthUsage) details() *PromptDetails {
+	if u.CacheReadInputTokens == 0 && u.CacheCreationInputTokens == 0 {
+		return nil
+	}
+	return &PromptDetails{CachedTokens: u.CacheReadInputTokens, CacheWriteTokens: u.CacheCreationInputTokens}
+}
+
 // parseDataURL splits "data:<mime>;base64,<data>".
 func parseDataURL(u string) (mime, data string, ok bool) {
 	rest, found := strings.CutPrefix(u, "data:")
@@ -243,7 +251,7 @@ func FromAnthropicResponse(a *anthResponse, provider string) *ChatResponse {
 		msg.Content = strPtr(text.String())
 	}
 	fr := MapAnthropicStopReason(a.StopReason)
-	u := Usage{PromptTokens: a.Usage.prompt(), CompletionTokens: a.Usage.OutputTokens}
+	u := Usage{PromptTokens: a.Usage.prompt(), CompletionTokens: a.Usage.OutputTokens, PromptTokensDetails: a.Usage.details()}
 	u.TotalTokens = u.PromptTokens + u.CompletionTokens
 	return &ChatResponse{
 		ID: a.ID, Object: "chat.completion", Created: time.Now().Unix(), Model: provider + "/" + a.Model,
@@ -382,6 +390,7 @@ func (s *anthropicStream) handle(data []byte) error {
 			s.id, s.model = e.Message.ID, s.providerName+"/"+e.Message.Model
 			s.usage.PromptTokens = e.Message.Usage.prompt()
 			s.usage.CompletionTokens = e.Message.Usage.OutputTokens
+			s.usage.PromptTokensDetails = e.Message.Usage.details()
 			s.hasUsage = true
 		}
 		s.pending = append(s.pending, s.chunk(&Delta{Role: "assistant", Content: strPtr("")}, nil))
@@ -412,6 +421,7 @@ func (s *anthropicStream) handle(data []byte) error {
 			s.usage.CompletionTokens = e.Usage.OutputTokens
 			if p := e.Usage.prompt(); p > 0 {
 				s.usage.PromptTokens = p
+				s.usage.PromptTokensDetails = e.Usage.details()
 			}
 			s.hasUsage = true
 		}

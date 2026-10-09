@@ -33,6 +33,7 @@ func (s *Server) registerAdmin(mux *http.ServeMux) {
 	h("POST /admin/api/keys/{id}/kill", s.adminKillKey(true))
 	h("POST /admin/api/keys/{id}/unkill", s.adminKillKey(false))
 	h("DELETE /admin/api/keys/{id}", s.adminRevokeKey)
+	h("PATCH /admin/api/keys/{id}", s.adminPatchKey)
 	h("GET /admin/api/limits", s.adminLimits)
 	h("PUT /admin/api/limits", s.adminPutLimit)
 	h("DELETE /admin/api/limits", s.adminDeleteLimit)
@@ -50,11 +51,23 @@ func (s *Server) registerAdmin(mux *http.ServeMux) {
 func (s *Server) adminAuth(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
+		ip := s.clientIP(r)
+		if locked, d := s.lockout.locked(ip); locked {
+			w.Header().Set("Retry-After", strconv.Itoa(int(d.Seconds())+1))
+			writeError(w, http.StatusTooManyRequests, "rate_limit_error", "admin_locked_out",
+				"Too many failed admin authentications from this address; try again later.")
+			return
+		}
 		tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !ok || s.cfg.AdminToken == "" || !secure.ConstantTimeEqual(strings.TrimSpace(tok), s.cfg.AdminToken) {
+			s.metrics.adminFails.Inc()
+			if s.lockout.fail(ip) {
+				s.log.Warn("admin lockout", "remote_ip", ip, "duration", s.cfg.AdminLockout.Lockout.String())
+			}
 			writeError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_admin_token", "admin token required")
 			return
 		}
+		s.lockout.success(ip)
 		next(w, r)
 	})
 }
@@ -90,17 +103,17 @@ func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
 	today := budget.PeriodStart(budget.Daily, now)
 	month := budget.PeriodStart(budget.Monthly, now)
 	since := today.AddDate(0, 0, -(days - 1))
-	sToday, err := s.store.SummarySince(ctx, today)
+	sToday, err := s.store.SummarySince(ctx, store.StatsFilter{}, today)
 	if err != nil {
 		storeErr(w, err)
 		return
 	}
-	sMonth, _ := s.store.SummarySince(ctx, month)
-	sRange, _ := s.store.SummarySince(ctx, since)
-	series, _ := s.store.SpendSeries(ctx, since, 24*time.Hour)
-	agents, _ := s.store.BreakdownSince(ctx, "agent", since, 8)
-	models, _ := s.store.BreakdownSince(ctx, "model", since, 8)
-	projects, _ := s.store.BreakdownSince(ctx, "project", since, 8)
+	sMonth, _ := s.store.SummarySince(ctx, store.StatsFilter{}, month)
+	sRange, _ := s.store.SummarySince(ctx, store.StatsFilter{}, since)
+	series, _ := s.store.SpendSeries(ctx, store.StatsFilter{}, since, 24*time.Hour)
+	agents, _ := s.store.BreakdownSince(ctx, store.StatsFilter{}, "agent", since, 8)
+	models, _ := s.store.BreakdownSince(ctx, store.StatsFilter{}, "model", since, 8)
+	projects, _ := s.store.BreakdownSince(ctx, store.StatsFilter{}, "project", since, 8)
 	names := map[string]string{}
 	if ps, err := s.store.ListProjects(ctx); err == nil {
 		for _, p := range ps {
@@ -189,12 +202,24 @@ func (s *Server) adminCreateProject(w http.ResponseWriter, r *http.Request) {
 func (s *Server) adminPatchProject(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		LogBodies *bool `json:"log_bodies"`
+		policyInput
 	}
 	if err := decode(r, &in); err != nil {
 		bad(w, err)
 		return
 	}
 	id := r.PathValue("id")
+	if in.policyInput.set() {
+		cur, err := s.store.GetProject(r.Context(), id)
+		if err != nil {
+			storeErr(w, err)
+			return
+		}
+		if err := s.store.SetProjectPolicy(r.Context(), id, in.policyInput.merge(cur.ModelPolicy)); err != nil {
+			bad(w, err)
+			return
+		}
+	}
 	if in.LogBodies != nil {
 		if err := s.store.SetProjectLogBodies(r.Context(), id, *in.LogBodies); err != nil {
 			storeErr(w, err)
@@ -311,6 +336,50 @@ func (s *Server) adminKillKey(kill bool) http.HandlerFunc {
 			Text: fmt.Sprintf(":octagonal_sign: OpenGate: key %q (%s) was %s by an operator (%d in-flight requests aborted).", k.Name, k.Prefix, map[bool]string{true: "KILLED", false: "re-enabled"}[kill], aborted)})
 		writeJSON(w, 200, map[string]any{"virtual_key": k, "aborted_inflight": aborted})
 	}
+}
+
+// policyInput is the PATCH body for model policies (nil = unchanged).
+type policyInput struct {
+	AllowedModels *[]string `json:"allowed_models"`
+	DeniedModels  *[]string `json:"denied_models"`
+	MaxTokens     *int      `json:"max_tokens"`
+}
+
+func (p policyInput) set() bool {
+	return p.AllowedModels != nil || p.DeniedModels != nil || p.MaxTokens != nil
+}
+
+func (p policyInput) merge(cur store.ModelPolicy) store.ModelPolicy {
+	if p.AllowedModels != nil {
+		cur.AllowedModels = *p.AllowedModels
+	}
+	if p.DeniedModels != nil {
+		cur.DeniedModels = *p.DeniedModels
+	}
+	if p.MaxTokens != nil {
+		cur.MaxTokens = *p.MaxTokens
+	}
+	return cur
+}
+
+func (s *Server) adminPatchKey(w http.ResponseWriter, r *http.Request) {
+	var in policyInput
+	if err := decode(r, &in); err != nil {
+		bad(w, err)
+		return
+	}
+	id := r.PathValue("id")
+	k, err := s.store.GetKey(r.Context(), id)
+	if err != nil {
+		storeErr(w, err)
+		return
+	}
+	if err := s.store.SetKeyPolicy(r.Context(), id, in.merge(k.ModelPolicy)); err != nil {
+		bad(w, err)
+		return
+	}
+	k, _ = s.store.GetKey(r.Context(), id)
+	writeJSON(w, 200, k)
 }
 
 func (s *Server) adminRevokeKey(w http.ResponseWriter, r *http.Request) {

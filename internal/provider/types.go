@@ -145,11 +145,37 @@ type FunctionCall struct {
 	Arguments string `json:"arguments"`
 }
 
-// Usage is OpenAI-style token usage.
+// Usage is OpenAI-style token usage. PromptTokens includes cached tokens
+// (OpenAI semantics); PromptTokensDetails breaks out the cached part.
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int            `json:"prompt_tokens"`
+	CompletionTokens    int            `json:"completion_tokens"`
+	TotalTokens         int            `json:"total_tokens"`
+	PromptTokensDetails *PromptDetails `json:"prompt_tokens_details,omitempty"`
+}
+
+// PromptDetails is OpenAI's prompt_tokens_details. CacheWriteTokens is an
+// OpenGate extension carrying Anthropic cache_creation_input_tokens (and
+// OpenAI cache writes, where reported).
+type PromptDetails struct {
+	CachedTokens     int `json:"cached_tokens"`
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+}
+
+// Cached returns prompt tokens served from the provider's cache.
+func (u Usage) Cached() int {
+	if u.PromptTokensDetails == nil {
+		return 0
+	}
+	return u.PromptTokensDetails.CachedTokens
+}
+
+// CacheWrite returns prompt tokens written to the provider's cache.
+func (u Usage) CacheWrite() int {
+	if u.PromptTokensDetails == nil {
+		return 0
+	}
+	return u.PromptTokensDetails.CacheWriteTokens
 }
 
 // ChatResponse is an OpenAI chat.completion or chat.completion.chunk.
@@ -199,6 +225,9 @@ type Call struct {
 	Target           Target
 	IncludeUsage     bool // client asked for stream_options.include_usage
 	DefaultMaxTokens int
+	// CapTokens, when > 0 and the client sent no max_tokens, is injected as
+	// the output cap (per-key/project max_tokens policy).
+	CapTokens int
 }
 
 // Result is a non-streaming response already in OpenAI format.

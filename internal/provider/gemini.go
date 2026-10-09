@@ -83,9 +83,10 @@ type gemResponse struct {
 		FinishReason string     `json:"finishReason"`
 	} `json:"candidates"`
 	UsageMetadata *struct {
-		PromptTokenCount     int `json:"promptTokenCount"`
-		CandidatesTokenCount int `json:"candidatesTokenCount"`
-		ThoughtsTokenCount   int `json:"thoughtsTokenCount"`
+		PromptTokenCount        int `json:"promptTokenCount"`
+		CandidatesTokenCount    int `json:"candidatesTokenCount"`
+		ThoughtsTokenCount      int `json:"thoughtsTokenCount"`
+		CachedContentTokenCount int `json:"cachedContentTokenCount"`
 	} `json:"usageMetadata"`
 	ModelVersion string `json:"modelVersion"`
 	ResponseID   string `json:"responseId"`
@@ -337,6 +338,9 @@ func (g *Gemini) Chat(ctx context.Context, c *Call) (*Result, error) {
 		Model: c.Target.Provider + "/" + c.Target.Model, Choices: []Choice{{Index: 0, Message: msg, FinishReason: &finish}}}
 	if gr.UsageMetadata != nil {
 		res.Usage = Usage{PromptTokens: gr.UsageMetadata.PromptTokenCount, CompletionTokens: gr.UsageMetadata.CandidatesTokenCount + gr.UsageMetadata.ThoughtsTokenCount}
+		if c := gr.UsageMetadata.CachedContentTokenCount; c > 0 {
+			res.Usage.PromptTokensDetails = &PromptDetails{CachedTokens: c}
+		}
 		res.Usage.TotalTokens = res.Usage.PromptTokens + res.Usage.CompletionTokens
 		res.UsageReported = true
 		u := res.Usage
@@ -409,6 +413,9 @@ func (s *geminiStream) Next() ([]byte, error) {
 		}
 		if gr.UsageMetadata != nil {
 			s.usage = Usage{PromptTokens: gr.UsageMetadata.PromptTokenCount, CompletionTokens: gr.UsageMetadata.CandidatesTokenCount + gr.UsageMetadata.ThoughtsTokenCount}
+			if c := gr.UsageMetadata.CachedContentTokenCount; c > 0 {
+				s.usage.PromptTokensDetails = &PromptDetails{CachedTokens: c}
+			}
 			s.hasUsage = true
 		}
 		if !s.started {
