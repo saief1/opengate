@@ -1,0 +1,33 @@
+# Quick start:
+#   cp examples/env.example .env && docker run --rm opengate keygen >> .env   (or: go run ./cmd/opengate keygen >> .env)
+#   docker compose up -d
+#   open http://localhost:8080/ui/
+#
+# The optional "mock" service lets you try everything without real provider
+# keys: `docker compose --profile demo up -d` and use examples/demo.yaml.
+services:
+  opengate:
+    build: .
+    image: opengate:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"   # bind to localhost; put a TLS proxy in front for remote access
+    env_file: .env
+    environment:
+      OPENGATE_CONFIG: /etc/opengate/opengate.yaml
+    volumes:
+      - opengate-data:/data
+      - ./examples/opengate.example.yaml:/etc/opengate/opengate.yaml:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  mock:
+    profiles: ["demo"]
+    image: opengate:latest
+    command: ["mock-provider", "-listen", "0.0.0.0:9090"]
+    read_only: true
+    cap_drop: [ALL]
+
+volumes:
+  opengate-data:

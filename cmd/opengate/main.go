@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -33,6 +34,7 @@ Usage:
   opengate pricing                           print the built-in price table (YAML)
   opengate mock-provider [-listen :9090]     run a fake OpenAI/Anthropic/Gemini upstream (dev/demo)
   opengate demo-seed [-days 30] [-config ...] insert synthetic historical traffic (demo only)
+  opengate healthcheck                       exit 0 if the local gateway answers /healthz (for containers)
   opengate version
 
 Environment: OPENGATE_CONFIG, OPENGATE_ADMIN_TOKEN, OPENGATE_MASTER_KEY, OPENGATE_LISTEN,
@@ -59,6 +61,8 @@ func main() {
 		err = mock(args)
 	case "demo-seed":
 		err = demoSeed(args)
+	case "healthcheck":
+		err = healthcheck()
 	case "version":
 		fmt.Println(server.Version)
 	case "help", "-h", "--help":
@@ -259,5 +263,26 @@ func demoSeed(args []string) error {
 		}
 	}
 	fmt.Fprintf(os.Stderr, "inserted %d synthetic historical requests over %d days\n", n, *days)
+	return nil
+}
+
+func healthcheck() error {
+	addr := os.Getenv("OPENGATE_LISTEN")
+	if addr == "" {
+		addr = "127.0.0.1:8080"
+	}
+	if addr[0] == ':' {
+		addr = "127.0.0.1" + addr
+	}
+	addr = strings.Replace(addr, "0.0.0.0", "127.0.0.1", 1)
+	c := &http.Client{Timeout: 3 * time.Second}
+	resp, err := c.Get("http://" + addr + "/healthz")
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("healthz returned %d", resp.StatusCode)
+	}
 	return nil
 }

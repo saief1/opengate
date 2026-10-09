@@ -1,0 +1,36 @@
+# OpenGate configuration. Every field is optional; values shown are defaults
+# unless marked "example". Secrets are never read from this file: use the
+# OPENGATE_ADMIN_TOKEN / OPENGATE_MASTER_KEY env vars. ${VAR} is expanded.
+
+listen: 127.0.0.1:8080          # OPENGATE_LISTEN (Docker image sets 0.0.0.0:8080)
+database: opengate.db           # OPENGATE_DATABASE — SQLite file
+pricing_file: ""                # OPENGATE_PRICING_FILE — empty = built-in table (`opengate pricing`)
+max_request_bytes: 10485760     # 10 MiB
+body_log_max_bytes: 65536       # per body, only when a project opts in to body logging
+default_max_tokens: 4096        # sent to Anthropic when the client omits max_tokens
+disable_dashboard: false
+
+# Built-in providers: openai, anthropic, gemini, openrouter. Override fields or
+# add your own (any OpenAI-compatible server works with type: openai).
+providers:
+  openai:
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    timeout: 120s               # time-to-first-byte and max gap between stream chunks
+  # local-llm:                  # example: Ollama / vLLM
+  #   type: openai
+  #   base_url: http://localhost:11434/v1
+
+# Aliases with ordered failover. Clients send model: "smart".
+routes:                         # example
+  smart: [anthropic/claude-sonnet-4-5, openai/gpt-4.1, openrouter/anthropic/claude-sonnet-4.5]
+  cheap: [openai/gpt-4o-mini, gemini/gemini-2.5-flash]
+
+retry:
+  max_attempts: 2               # attempts per target before failing over
+  initial_backoff: 250ms
+  max_backoff: 4s               # Retry-After above this fails over immediately
+
+alerts:
+  webhook_url: ${OPENGATE_ALERT_WEBHOOK_URL}
+  thresholds: [0.8, 1.0]

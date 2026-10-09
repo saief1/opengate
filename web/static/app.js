@@ -81,20 +81,20 @@ function table(headers, rows, empty) {
 function sw(checked, onchange) {
   return el("label", { class: "switch" }, el("input", { type: "checkbox", checked, onchange: (e) => onchange(e.target.checked) }), el("span", {}));
 }
-function bar(spent, limit) {
+function bar(spent, limit, neutral) {
   const pct = limit > 0 ? Math.min(100, (spent / limit) * 100) : 0;
-  const b = el("div", { class: "bar" + (pct >= 100 ? " over" : pct >= 80 ? " warn" : "") }, el("span", {}));
+  const b = el("div", { class: "bar" + (neutral ? "" : pct >= 100 ? " over" : pct >= 80 ? " warn" : "") }, el("span", {}));
   b.firstChild.style.width = pct + "%";
   return b;
 }
 
 // ---------- chart ----------
 function spendChart(series, days, since) {
-  const W = 900, H = 260, P = { l: 56, r: 12, t: 12, b: 28 };
+  const W = 900, H = 330, P = { l: 56, r: 12, t: 12, b: 28 };
   const start = new Date(since).getTime();
   const buckets = [];
   for (let i = 0; i < days; i++) buckets.push({ t: start + i * 86400000, parts: {} });
-  const providers = [...new Set(series.map((p) => p.provider))].sort();
+  const providers = [...new Set(series.filter((p) => p.cost_usd > 0).map((p) => p.provider))].sort();
   for (const p of series) {
     const i = Math.round((new Date(p.bucket).getTime() - start) / 86400000);
     if (buckets[i]) buckets[i].parts[p.provider] = (buckets[i].parts[p.provider] || 0) + p.cost_usd;
@@ -106,7 +106,7 @@ function spendChart(series, days, since) {
   for (let g = 0; g <= 4; g++) {
     const y = P.t + ih - (ih * g) / 4;
     svg.append(el("line", { class: "grid-line", x1: P.l, x2: W - P.r, y1: y, y2: y }));
-    svg.append(el("text", { x: P.l - 8, y: y + 4, "text-anchor": "end" }, usd((nice * g) / 4, nice < 1 ? 2 : 0)));
+    svg.append(el("text", { x: P.l - 8, y: y + 4, "text-anchor": "end" }, usd((nice * g) / 4, nice < 10 ? 2 : 0)));
   }
   buckets.forEach((b, i) => {
     let y = P.t + ih;
@@ -255,7 +255,7 @@ function topList(items) {
   if (!items || !items.length) return [el("div", { class: "empty" }, "No traffic yet.")];
   const max = Math.max(...items.map((i) => i.cost_usd), 0.000001);
   return items.slice(0, 6).map((i) => el("div", { class: "list-row" },
-    el("div", {}, el("div", {}, i.name), bar(i.cost_usd, max)),
+    el("div", { class: "grow" }, el("div", {}, i.name), bar(i.cost_usd, max, true)),
     el("div", { class: "num" }, el("div", {}, usdSmart(i.cost_usd)), el("div", { class: "muted" }, num(i.requests) + " req"))));
 }
 

@@ -28,15 +28,15 @@ var Version = "dev"
 
 // Options configure a Server.
 type Options struct {
-	Config   *config.Config
-	Store    *store.Store
-	Cipher   *secure.Cipher
-	Pricing  *pricing.Registry
-	Logger   *slog.Logger
-	WebFS    fs.FS // dashboard assets; nil disables the dashboard
-	Alerter  *budget.Alerter
-	HTTP     *provider.HTTP
-	Sleep    func(ctx context.Context, d time.Duration) error // for tests
+	Config  *config.Config
+	Store   *store.Store
+	Cipher  *secure.Cipher
+	Pricing *pricing.Registry
+	Logger  *slog.Logger
+	WebFS   fs.FS // dashboard assets; nil disables the dashboard
+	Alerter *budget.Alerter
+	HTTP    *provider.HTTP
+	Sleep   func(ctx context.Context, d time.Duration) error // for tests
 }
 
 // Server is the OpenGate HTTP application.

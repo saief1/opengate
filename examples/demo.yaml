@@ -1,0 +1,12 @@
+# Demo config: every provider points at the local mock (`opengate mock-provider`).
+listen: 127.0.0.1:8080
+database: demo.db
+providers:
+  openai:     {base_url: "http://127.0.0.1:9090/openai/v1"}
+  anthropic:  {base_url: "http://127.0.0.1:9090/anthropic"}
+  gemini:     {base_url: "http://127.0.0.1:9090/gemini"}
+  openrouter: {base_url: "http://127.0.0.1:9090/openrouter/v1"}
+routes:
+  smart: [openai/gpt-4o-fail, anthropic/claude-sonnet-4-5]
+  cheap: [openai/gpt-4o-mini, gemini/gemini-2.5-flash]
+retry: {max_attempts: 2, initial_backoff: 50ms, max_backoff: 500ms}
