@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenGate: the independent, open-source AI gateway</title>
+  <meta name="description" content="OpenGate is the independent, self-hosted, open-source AI gateway, not owned by a payment company or cloud vendor, shipped as one static Go binary. Hard per-agent budgets with a kill switch, multi-provider failover, smart routing, PII redaction and customer billing.">
+  <meta property="og:title" content="OpenGate: stop AI agents from burning your money">
+  <meta property="og:description" content="Open-source AI gateway in one static binary: hard budgets, kill switch, failover, guardrails.">
+  <meta property="og:image" content="assets/opengate-social-preview-1280x640.png">
+  <link rel="icon" href="assets/favicon.ico" sizes="any">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="nav">
+  <div class="wrap row">
+    <a href="#" class="logo"><img src="assets/opengate-lockup-dark.svg" alt="OpenGate" width="176" height="32"></a>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="#security">Security</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#quickstart">Quickstart</a>
+      <a href="#faq">FAQ</a>
+      <a class="btn small" href="https://github.com/opengate-dev/opengate">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Independent · self-hosted · open source (Apache-2.0)</p>
+    <h1>Stop AI agents from<br><span>burning your money.</span></h1>
+    <p class="lead">The independent AI gateway, not owned by a payment company or a cloud vendor. OpenGate runs on your infrastructure between your agents and OpenAI, Anthropic, Gemini and OpenRouter. Every agent gets a hard budget, every key has a kill switch, and every request is priced before it leaves your network.</p>
+    <div class="cta">
+      <a class="btn primary" href="#quickstart">Self-host in 2 minutes</a>
+      <a class="btn" href="#pricing">OpenGate Cloud (soon)</a>
+    </div>
+    <ul class="proof">
+      <li><b>~17 MB</b> static binary</li>
+      <li><b>4</b> direct Go dependencies</li>
+      <li><b>0</b> Python packages</li>
+      <li><b>OpenAI</b>-compatible API</li>
+    </ul>
+    <figure class="shot">
+      <img src="assets/dashboard.png" alt="OpenGate dashboard: spend over time, budgets and kill switches" width="1440" height="900">
+    </figure>
+  </div>
+</section>
+
+<section class="independent">
+  <div class="wrap narrow center">
+    <h2>Your gateway shouldn't belong to someone else's business model</h2>
+    <p>The AI gateway holds every provider key, sees every prompt and decides where every token goes. Independent options are consolidating: on Aug 19, 2026 Stripe announced it has <a href="https://stripe.com/newsroom/news/stripe-agrees-to-acquire-openrouter">agreed to acquire OpenRouter</a>. OpenGate is Apache-2.0 software you run yourself, with no phone-home, no telemetry, and no vendor between you and your models.</p>
+  </div>
+</section>
+
+<section class="problem">
+  <div class="wrap grid3">
+    <div><h3>A looping agent</h3><p>retries the same tool call 4,000 times overnight. You find out from the invoice.</p></div>
+    <div><h3>A leaked key</h3><p>in a public repo gets drained in hours, and every agent shares the same provider key.</p></div>
+    <div><h3>A gateway</h3><p>with hundreds of transitive Python dependencies sits on the path of every prompt and every key.</p></div>
+  </div>
+</section>
+
+<section id="features" class="features">
+  <div class="wrap">
+    <h2>Everything between your agents and the model, in one process</h2>
+    <div class="cards">
+      <article><h3>Hard budgets, kill switch</h3><p>Daily, monthly and lifetime USD limits plus RPM per key, agent or project. The worst-case cost is reserved atomically before the call. One click kills a key and aborts its in-flight streams.</p></article>
+      <article><h3>Failover and retries</h3><p>Ordered fallbacks per model or alias with backoff on 429, 5xx and timeouts. OpenAI, Anthropic (full Messages translation, including streaming), Gemini and OpenRouter.</p></article>
+      <article><h3>Smart routing</h3><p>Route by prompt length, tags, headers or cost ceiling, or send <code>model: "auto"</code> and get the cheapest model that meets the request's difficulty tier. The dashboard shows what you saved.</p></article>
+      <article><h3>Guardrails</h3><p>Redact or block emails, phone numbers, Luhn-valid cards, IBANs, SSNs and SINs, API keys and private keys, in prompts and responses. Prompt-injection heuristics log or block.</p></article>
+      <article><h3>Bill your customers</h3><p>Attribute usage to end customers, apply markup rules, export monthly CSVs and push usage to Stripe Billing Meters automatically.</p></article>
+      <article><h3>Teams and audit</h3><p>Organizations, argon2id accounts, owner, admin, member and viewer roles, invites, and an append-only audit log. Prometheus metrics, JSON logs, SQLite or Postgres.</p></article>
+    </div>
+  </div>
+</section>
+
+<section id="security" class="security">
+  <div class="wrap split">
+    <div>
+      <h2>A gateway you can read in an afternoon</h2>
+      <p>A gateway holds every provider key you own and sees every prompt. So OpenGate is built to be audited, not trusted.</p>
+      <ul class="checks">
+        <li><b>Single static binary.</b> Pure Go, no CGO, built with <code>-trimpath</code>, shipped as a distroless non-root image.</li>
+        <li><b>Minimal dependencies.</b> SQLite and Postgres drivers, YAML and <code>x/crypto</code>. That's the list. No PyPI supply chain to compromise.</li>
+        <li><b>Encrypted provider keys.</b> AES-256-GCM, bound to their row, never returned by the API. Virtual keys are stored as hashes.</li>
+        <li><b>Private by default.</b> Prompt and response bodies are not stored unless a project opts in.</li>
+        <li><b>Secure defaults.</b> Strict CSP, org-scoped admin API, brute-force lockout, https-only upstreams.</li>
+      </ul>
+    </div>
+    <pre class="code"><span class="c"># go.mod: the whole dependency surface</span>
+require (
+  github.com/jackc/pgx/v5
+  golang.org/x/crypto
+  gopkg.in/yaml.v3
+  modernc.org/sqlite
+)
+
+<span class="c"># verify what you run</span>
+$ go mod verify
+all modules verified</pre>
+  </div>
+</section>
+
+<section id="pricing" class="pricing">
+  <div class="wrap">
+    <h2>Pricing</h2>
+    <p class="draft">Draft pricing. Cloud plans aren't available yet, and prices and limits may change before launch.</p>
+    <div class="plans">
+      <article class="plan">
+        <h3>Self-host</h3>
+        <p class="price">Free</p>
+        <p class="muted">Apache-2.0, forever</p>
+        <ul><li>Every feature in this page</li><li>Unlimited keys, agents and requests</li><li>SQLite or Postgres</li><li>Community support on GitHub</li></ul>
+        <a class="btn primary" href="#quickstart">Get started</a>
+      </article>
+      <article class="plan featured">
+        <h3>Cloud Team</h3>
+        <p class="price">$49<span>/mo</span></p>
+        <p class="muted">Draft · managed by us</p>
+        <ul><li>Hosted OpenGate, upgrades included</li><li>Team accounts, SSO-ready</li><li>30-day log retention</li><li>Email support</li></ul>
+        <a class="btn" href="mailto:hello@opengate.dev?subject=OpenGate%20Cloud%20waitlist">Join the waitlist</a>
+      </article>
+      <article class="plan">
+        <h3>Cloud Enterprise</h3>
+        <p class="price">Contact us</p>
+        <p class="muted">Draft</p>
+        <ul><li>Dedicated or VPC deployment</li><li>Custom retention and data residency</li><li>Security review support, SLA</li><li>Priority support</li></ul>
+        <a class="btn" href="mailto:hello@opengate.dev?subject=OpenGate%20Enterprise">Contact sales</a>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section id="quickstart" class="quickstart">
+  <div class="wrap split">
+    <div>
+      <h2>Two minutes to your first budget</h2>
+      <ol>
+        <li>Run the binary or the container.</li>
+        <li>Create a virtual key with a daily limit.</li>
+        <li>Point any OpenAI SDK at OpenGate. That's the whole migration.</li>
+      </ol>
+      <p class="muted">No API keys yet? <code>make demo</code> runs a mock provider with seeded traffic.</p>
+    </div>
+    <pre class="code"><span class="c"># 1. run</span>
+$ eval "$(opengate keygen | sed 's/^/export /')"
+$ export OPENAI_API_KEY=sk-...
+$ opengate serve
+
+<span class="c"># 2. a key for one agent, capped at $5/day</span>
+$ curl -s localhost:8080/admin/api/keys \
+    -H "Authorization: Bearer $OPENGATE_ADMIN_TOKEN" \
+    -d '{"name":"planner","agent":"planner","limits":{"daily_usd":5}}'
+
+<span class="c"># 3. use it like OpenAI</span>
+client = OpenAI(base_url="http://localhost:8080/v1",
+                api_key="og-...")</pre>
+  </div>
+</section>
+
+<section id="faq" class="faq">
+  <div class="wrap narrow">
+    <h2>FAQ</h2>
+    <details><summary>How is this different from LiteLLM or OpenRouter?</summary><p>OpenRouter is a hosted service, so your traffic goes through a third party (Stripe announced on Aug 19, 2026 that it has <a href="https://stripe.com/newsroom/news/stripe-agrees-to-acquire-openrouter">agreed to acquire it</a>). LiteLLM is a large Python project. OpenGate is a small, independent, self-hosted Go binary focused on spend control: budgets are enforced before a request leaves, not reported afterwards. Migration guides for LiteLLM and Helicone are in the docs.</p></details>
+    <details><summary>Do I have to change my code?</summary><p>No. Change the base URL and API key of any OpenAI SDK. Models are addressed as <code>provider/model</code>, for example <code>anthropic/claude-sonnet-4-5</code>, or through aliases you define. Chat Completions (streaming included), Embeddings and the Responses API are supported.</p></details>
+    <details><summary>How accurate are the budgets?</summary><p>Costs come from the provider's usage fields and an editable price table, including cache-read and cache-write tokens. Before each call the worst case (max_tokens × price) is reserved, so concurrent requests can't overshoot a limit on one instance.</p></details>
+    <details><summary>Does OpenGate store my prompts?</summary><p>Not by default. Only metadata (model, tokens, cost, latency, status) is logged. Body logging is opt-in per project and passes through the redaction guardrails first.</p></details>
+    <details><summary>Can I run several replicas?</summary><p>Yes, on Postgres. Rate limits, spend and kill switches are shared through the database. Budget reservations are per process, so very tight limits are best enforced by a single instance (documented in the security model).</p></details>
+    <details><summary>Is there a hosted version?</summary><p>OpenGate Cloud is planned. Pricing above is a draft. Self-hosting is and will stay free.</p></details>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap row">
+    <img src="assets/opengate-symbol-accent-on-dark.svg" alt="" width="28" height="28">
+    <span class="muted">© 2026 OpenGate contributors · Apache-2.0</span>
+    <nav><a href="https://github.com/opengate-dev/opengate">GitHub</a><a href="https://github.com/opengate-dev/opengate/tree/main/docs">Docs</a><a href="https://github.com/opengate-dev/opengate/blob/main/SECURITY.md">Security</a></nav>
+  </div>
+</footer>
+</body>
+</html>

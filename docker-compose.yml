@@ -4,7 +4,12 @@
 #   open http://localhost:8080/ui/
 #
 # The optional "mock" service lets you try everything without real provider
-# keys: `docker compose --profile demo up -d` and use examples/demo.yaml.
+# keys: `docker compose --profile demo up -d` with these lines in .env:
+#   OPENGATE_PROVIDER_OPENAI_BASE_URL=http://mock:9090/openai/v1
+#   OPENGATE_PROVIDER_ANTHROPIC_BASE_URL=http://mock:9090/anthropic
+#   OPENGATE_PROVIDER_GEMINI_BASE_URL=http://mock:9090/gemini
+#   OPENGATE_PROVIDER_OPENROUTER_BASE_URL=http://mock:9090/openrouter/v1
+#   OPENGATE_ALLOW_INSECURE_UPSTREAM=true   # plain http to the mock container (never for real providers)
 services:
   opengate:
     build: .

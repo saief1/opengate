@@ -1,0 +1,39 @@
+# Changelog
+
+All notable changes to OpenGate. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
+project uses [Semantic Versioning](https://semver.org/).
+
+## [1.0.0] - 2026-10-09
+
+First public release.
+
+### Gateway
+- OpenAI-compatible `/v1/chat/completions` (streaming SSE and non-streaming), `/v1/embeddings`, `/v1/responses` (OpenAI passthrough), `/v1/models`.
+- Adapters for OpenAI, Anthropic (full Messages API translation incl. tools and streaming), Google Gemini, OpenRouter and any OpenAI-compatible server.
+- Aliases with ordered failover, and retries with backoff on 429, 5xx and timeouts.
+- An editable, source-cited price table with cache-read/write and long-context pricing, hot-reloaded on `SIGHUP`.
+
+### Spend control
+- Daily, monthly and total USD limits plus RPM per key, agent and project. Worst-case cost is reserved atomically before every call and reconciled afterwards.
+- A kill switch per key and project that aborts in-flight streams, and propagates across replicas within ~2 s.
+- Slack-compatible webhook alerts at configurable thresholds.
+- Model allow/deny lists and `max_tokens` caps per key and project. Per-project opt-in for unbudgetable passthrough features (`background`, `n`, hosted tools, `store`).
+
+### Differentiators
+- Smart routing: rules by prompt length, tags, headers, agent and cost ceiling, with per-rule fallbacks, plus an `auto` alias that picks the cheapest model meeting the request's difficulty tier. Savings are tracked against the requested model.
+- Guardrails: PII and secret detection (email, phone, Luhn-checked cards, IBAN, SSN/SIN, API keys, JWTs, private keys) with off/log/redact/block modes on requests and responses, plus prompt-injection heuristics.
+- Customer billing: end-customer attribution (trusted header or key binding), markup rules, monthly CSV export, Stripe Billing Meter sync.
+- An opt-in exact-match response cache scoped per project, key and customer.
+
+### Teams and operations
+- Organizations, argon2id user accounts, sessions, owner/admin/member/viewer roles, invites, an append-only audit log, and per-org provider keys.
+- An embedded dashboard (vanilla JS, strict CSP) with overview, logs, keys, projects, budgets, routing, guardrails, customers and billing, providers, team, audit and settings pages.
+- SQLite (default) or PostgreSQL storage with migrations. Shared rate limits survive restarts.
+- Prometheus `/metrics`, JSON logs, `/healthz`, `/livez` and `/readyz`.
+- An OpenAPI 3 spec for the admin API, plus Go and TypeScript client examples.
+- A distroless non-root Docker image, compose examples (SQLite and Postgres), and GoReleaser config for linux/darwin/windows/freebsd.
+
+### Security
+- Fixes from an internal security review before release: org scoping of every admin route, `max_tokens` normalization, passthrough feature allowlist, client-asserted customer IDs off by default, trusted-proxy aware client IPs, a lockout that can't lock out the real credential and is bounded, a dedicated metrics token, https-only upstreams, generic error messages, a kill re-check, and an optional `max_inflight` cap. See `SECURITY.md`.
+
+[1.0.0]: https://github.com/opengate-dev/opengate/releases/tag/v1.0.0

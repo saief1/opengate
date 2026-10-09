@@ -62,6 +62,15 @@ trusted_proxies: []             # e.g. [10.0.0.0/8]: XFF honored only from these
 allow_insecure_upstream: false  # allow plain-http provider/Stripe/webhook URLs to non-loopback hosts
 max_inflight: 0                 # instance-wide cap on concurrent gateway requests (0 = unlimited)
 
+# Dashboard accounts (argon2id passwords, HttpOnly SameSite=Strict sessions).
+# Bootstrap the first owner with `opengate create-user`; others join by invite.
+auth:
+  session_ttl: 12h              # idle timeout
+  session_max_age: 168h         # absolute lifetime
+  invite_ttl: 168h
+  allow_signup: false           # true = anyone may create an account + org (hosted mode)
+  secure_cookies: false         # force Secure (automatic over TLS / trusted X-Forwarded-Proto)
+
 # Smart routing. Rules (by prompt length, tags, headers, agent, cost
 # ceiling) are managed in the dashboard / admin API. The "auto" alias picks
 # the cheapest model meeting the request's estimated difficulty tier.

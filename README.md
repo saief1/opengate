@@ -8,11 +8,15 @@
 
 # OpenGate
 
-**The auditable, secure-by-default AI gateway.** One static Go binary that sits between your agents and
-OpenAI, Anthropic, Google Gemini and OpenRouter, so you get **hard spend limits with a kill switch**,
-**multi-provider failover**, and **request logs**, without a sprawling Python supply chain.
+**The independent, self-hosted, open-source AI gateway, not owned by a payment company or a cloud vendor.**
+One auditable static Go binary that sits between your agents and OpenAI, Anthropic, Google Gemini and OpenRouter,
+so you get **hard spend limits with a kill switch**, **multi-provider failover**, and **request logs**, without a
+sprawling Python supply chain.
 
-![OpenGate dashboard](docs/dashboard.png)
+![OpenGate dashboard](docs/screenshots/overview.png)
+
+**Docs:** [Getting started](docs/getting-started.md) · [Configuration](docs/configuration.md) · [Security model](docs/security-model.md) ·
+[Admin API / OpenAPI](docs/admin-api.md) · [From LiteLLM](docs/migrate-from-litellm.md) · [From Helicone](docs/migrate-from-helicone.md) · [Changelog](CHANGELOG.md)
 
 ## Why OpenGate
 
@@ -23,18 +27,25 @@ Teams running fleets of AI agents keep hitting the same problems:
 * **Supply-chain risk.** An LLM gateway holds every provider credential you own. In March 2026 a
   compromised release of a popular Python gateway's PyPI package showed how exposed a large
   dependency tree leaves you.
-* **Vendor lock-in.** Your gateway shouldn't belong to your model vendor.
+* **Consolidation.** Independent gateway options are consolidating. For example, Stripe announced on
+  Aug 19, 2026 that it has [agreed to acquire OpenRouter](https://stripe.com/newsroom/news/stripe-agrees-to-acquire-openrouter). The layer that holds your keys,
+  sees your prompts and decides where your tokens go shouldn't belong to your payment processor, your cloud
+  vendor or your model vendor.
 
 OpenGate's answer:
 
 | | |
 |---|---|
-| **Auditable single binary** | About 12 MB, statically linked, `CGO_ENABLED=0`. Two direct dependencies (pure-Go SQLite and YAML). The dashboard is vanilla JS embedded with `go:embed`, with no npm. |
+| **Auditable single binary** | About 17 MB, statically linked, `CGO_ENABLED=0`. Four direct dependencies (pure-Go SQLite, pgx, YAML, `x/crypto`). The dashboard is vanilla JS embedded with `go:embed`, with no npm. |
 | **Hard budgets and kill switch** | Daily, monthly and total USD limits plus requests-per-minute, per **key**, **agent** or **project**. Over-limit requests are rejected *before* they reach the provider. One click (or one API call) kills a key or project and **aborts its in-flight streams**. |
 | **Failover and retries** | An ordered fallback list per model alias. Retries on 429, 5xx and timeouts with exponential backoff and jitter, honouring `Retry-After`. A stream fails over if the provider breaks before the first token. |
-| **OpenAI-compatible** | `POST /v1/chat/completions` (streaming SSE and non-streaming) and `GET /v1/models`. Point any OpenAI SDK at it. Anthropic and Gemini are translated both ways, including tools and streaming. |
+| **OpenAI-compatible** | `POST /v1/chat/completions` (streaming SSE and non-streaming), `/v1/embeddings`, `/v1/responses` and `GET /v1/models`. Point any OpenAI SDK at it. Anthropic and Gemini are translated both ways, including tools and streaming. |
+| **Smart routing** | Rules by prompt length, tags, headers, agent or cost ceiling, plus an `auto` alias that picks the cheapest model meeting the request's difficulty tier. The dashboard shows the savings. |
+| **Guardrails** | PII and secret redaction or blocking (emails, phones, Luhn-checked cards, IBAN, SSN/SIN, API keys, private keys) on requests and responses, and prompt-injection flags, per project. |
+| **Customer billing** | Per-end-customer usage and cost, markup rules, monthly CSV export and Stripe Billing Meter sync, so AI-app founders can bill their users. |
+| **Teams** | Organizations, argon2id accounts, owner/admin/member/viewer roles, invites and an audit log. Postgres for HA, Prometheus metrics, response cache. |
 | **Secure by default** | Provider keys are AES-256-GCM encrypted at rest. Virtual keys are stored only as SHA-256 hashes. Body logging is **off** unless a project opts in. The server refuses to start without an admin token and master key, and binds to localhost by default. |
-| **Independent** | Apache-2.0. Self-hosted, with no phone-home and no telemetry. |
+| **Independent** | Apache-2.0, self-hosted, with no phone-home and no telemetry. Not owned by a payment company, cloud or model vendor. Your traffic, keys and data stay on your infrastructure. |
 
 ## 2-minute quickstart
 
@@ -238,7 +249,7 @@ Every endpoint needs `Authorization: Bearer $OPENGATE_ADMIN_TOKEN`.
 * **Privacy:** prompt and response bodies are **not stored** unless a project turns on body logging (and then they're truncated).
   Metadata (model, tokens, cost, latency, status, key and agent) is always logged.
 * **Network:** the gateway binds to localhost by default. For remote access, terminate TLS in a reverse proxy.
-* **Supply chain:** two direct dependencies, both pure Go, pinned in `go.sum`, and builds use `-trimpath`. Read `go.mod`
+* **Supply chain:** four direct dependencies, all pure Go, pinned in `go.sum`, and builds use `-trimpath`. Read `go.mod`
   and audit it in an afternoon.
 
 See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
@@ -248,16 +259,23 @@ See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 ```
 cmd/opengate/          CLI entrypoint (serve, keygen, create-key, mock-provider, demo-seed…)
 internal/config/       YAML + env loading, provider defaults, validation
-internal/secure/       virtual key generation/hashing, AES-GCM cipher
-internal/store/        SQLite (modernc.org/sqlite, no CGO): projects, keys, limits, provider keys, logs
-internal/pricing/      price table (embedded default + editable YAML), cost calculation
-internal/budget/       spend limits, token-bucket RPM limiter, threshold webhooks
-internal/provider/     adapters: OpenAI(-compatible), OpenRouter, Anthropic, Gemini (+ SSE parsing)
-internal/server/       /v1 API, failover/retry loop, kill switch registry, admin API, dashboard serving
+internal/secure/       virtual keys, AES-GCM cipher, argon2id passwords, random tokens
+internal/store/        SQLite / PostgreSQL storage + migrations: orgs, users, projects, keys, limits, logs, rules, customers, cache, audit
+internal/pricing/      price table (embedded, source-cited default + editable YAML), cost calculation incl. cache tokens
+internal/budget/       atomic reservations, spend limits, shared token-bucket RPM limiter, threshold webhooks
+internal/provider/     adapters: OpenAI(-compatible), OpenRouter, Anthropic, Gemini (+ SSE, embeddings, Responses)
+internal/routing/      routing rules + auto-tier classifier
+internal/guard/        PII / secret detectors and prompt-injection heuristics
+internal/billing/      markups, CSV export, Stripe meter-event sync
+internal/metrics/      dependency-free Prometheus exporter
+internal/server/       /v1 API, failover loop, kill switch, auth/RBAC, admin API, dashboard serving
 internal/mockprovider/ fake upstream used by tests and the demo
 web/static/            dashboard (vanilla JS/CSS, favicons, brand lockup; embedded)
+site/                  static marketing landing page
+docs/                  guides, OpenAPI spec, screenshots
+examples/              configs, Go + TypeScript admin clients
 assets/                brand SVGs for README, GitHub avatar + social preview
-integration/           end-to-end tests against the mock provider
+integration/           end-to-end tests against the mock provider (incl. security regressions)
 ```
 
 ## Development
@@ -270,15 +288,14 @@ make demo          # local demo with seeded traffic
 
 ## Roadmap
 
-* **Smart cost/quality routing:** route each request to the cheapest model that meets a quality bar,
-  learned from your own traffic and evals, with budget-aware downgrade instead of a hard stop.
-* **PII and secret redaction:** detect and mask API keys, credentials and PII in prompts before they leave
-  your network, with per-project policies and audit trails.
-* **Customer billing and Stripe sync:** per-customer metering with markup and invoices, synced as Stripe usage records.
-* **Distillation:** capture opted-in traffic as datasets to fine-tune smaller, cheaper models that replace
-  expensive ones on your own workloads.
-* Also planned: Postgres storage for HA, Prometheus metrics, SSO and RBAC for the dashboard, Embeddings and Responses API,
-  pre-request cost reservation for strict budgets under high concurrency, and per-key model allow-lists.
+Shipped in 1.0: smart routing, PII and secret guardrails, customer billing with Stripe sync, Postgres, Prometheus,
+RBAC and orgs, embeddings and Responses, atomic budget reservations, model allow-lists. Next:
+
+* **Distillation:** capture opted-in traffic as datasets to fine-tune smaller, cheaper models that replace expensive ones on your own workloads.
+* **Learned routing:** quality tiers informed by your own evals and feedback, plus budget-aware downgrades instead of a hard stop.
+* **DB-backed budget reservations** for exact limits across many replicas.
+* **SSO (OIDC/SAML), 2FA, master-key rotation, and OpenTelemetry traces.**
+* **OpenGate Cloud:** a hosted version for teams (see `site/`; pricing is a draft).
 
 ## License
 

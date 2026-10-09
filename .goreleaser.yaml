@@ -1,0 +1,65 @@
+# GoReleaser v2: `goreleaser release --clean` on a v* tag (CI), or
+# `goreleaser release --snapshot --clean` locally. Pure Go, so every target
+# is a static CGO-free cross-compile.
+version: 2
+project_name: opengate
+
+before:
+  hooks:
+    - go mod verify
+    - go test ./...
+
+builds:
+  - id: opengate
+    main: ./cmd/opengate
+    binary: opengate
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X github.com/opengate-dev/opengate/internal/server.Version={{ .Version }}
+    goos: [linux, darwin, windows, freebsd]
+    goarch: [amd64, arm64]
+    ignore:
+      - {goos: windows, goarch: arm64}
+      - {goos: freebsd, goarch: arm64}
+    mod_timestamp: "{{ .CommitTimestamp }}"   # reproducible builds
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    format_overrides:
+      - {goos: windows, formats: [zip]}
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - SECURITY.md
+      - CHANGELOG.md
+      - examples/opengate.example.yaml
+      - docs/*.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# SBOMs: uncomment when syft is on PATH (e.g. in CI).
+# sboms:
+#   - artifacts: archive
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude: ["^gofmt$", "^docs:", "^test:"]
+
+release:
+  github:                # placeholder until the domain/org is final
+    owner: opengate-dev
+    name: opengate
+  draft: true            # review before publishing
+  prerelease: auto
+  footer: |
+    Verify downloads with `sha256sum -c checksums.txt`. Container image: build from the tagged Dockerfile.

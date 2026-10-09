@@ -320,6 +320,9 @@ func (c *Config) applyEnv() {
 	set(&c.Log.Format, "OPENGATE_LOG_FORMAT")
 	set(&c.RateLimit.Backend, "OPENGATE_RATE_LIMIT_BACKEND")
 	set(&c.StripeAPIKey, "STRIPE_API_KEY")
+	if v := os.Getenv("OPENGATE_ALLOW_INSECURE_UPSTREAM"); v == "1" || strings.EqualFold(v, "true") {
+		c.AllowInsecureUpstream = true
+	}
 	// OPENGATE_PROVIDER_<NAME>_BASE_URL overrides a provider base URL.
 	for name, p := range c.Providers {
 		key := "OPENGATE_PROVIDER_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_BASE_URL"
