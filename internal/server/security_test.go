@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/config"
-	"github.com/opengate-dev/opengate/internal/provider"
+	"github.com/saief1/opengate/internal/config"
+	"github.com/saief1/opengate/internal/provider"
 )
 
 func TestClientIPRightmostUntrustedHop(t *testing.T) {

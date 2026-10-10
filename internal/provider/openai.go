@@ -17,7 +17,7 @@ type OpenAI struct {
 func (o *OpenAI) headers(t Target) map[string]string {
 	h := map[string]string{}
 	if o.openRouter {
-		h["HTTP-Referer"] = "https://github.com/opengate-dev/opengate"
+		h["HTTP-Referer"] = "https://github.com/saief1/opengate"
 		h["X-Title"] = "OpenGate"
 	}
 	for k, v := range t.Config.Headers {

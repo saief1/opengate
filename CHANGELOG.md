@@ -48,4 +48,4 @@ First public release.
 ### Security
 - Fixes from an internal security review before release: org scoping of every admin route, `max_tokens` normalization, passthrough feature allowlist, client-asserted customer IDs off by default, trusted-proxy aware client IPs, a lockout that can't lock out the real credential and is bounded, a dedicated metrics token, https-only upstreams, generic error messages, a kill re-check, and an optional `max_inflight` cap. See `SECURITY.md`.
 
-[1.0.0]: https://github.com/opengate-dev/opengate/releases/tag/v1.0.0
+[1.0.0]: https://github.com/saief1/opengate/releases/tag/v1.0.0

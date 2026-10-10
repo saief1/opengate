@@ -1,6 +1,6 @@
 BINARY  := opengate
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -s -w -X github.com/opengate-dev/opengate/internal/server.Version=$(VERSION)
+LDFLAGS := -s -w -X github.com/saief1/opengate/internal/server.Version=$(VERSION)
 export CGO_ENABLED=0
 
 .PHONY: build test test-race test-postgres test-integration vet fmt run mock demo docker clean zip

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/secure"
+	"github.com/saief1/opengate/internal/secure"
 )
 
 // Roles, most privileged first.

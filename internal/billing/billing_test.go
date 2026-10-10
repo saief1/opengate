@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/config"
-	"github.com/opengate-dev/opengate/internal/store"
-	"github.com/opengate-dev/opengate/internal/storetest"
+	"github.com/saief1/opengate/internal/config"
+	"github.com/saief1/opengate/internal/store"
+	"github.com/saief1/opengate/internal/storetest"
 )
 
 func TestResolveMarkup(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/opengate-dev/opengate/internal/store"
+	"github.com/saief1/opengate/internal/store"
 )
 
 func TestEvaluateRules(t *testing.T) {

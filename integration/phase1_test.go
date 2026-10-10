@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/config"
-	"github.com/opengate-dev/opengate/internal/pricing"
-	"github.com/opengate-dev/opengate/internal/store"
+	"github.com/saief1/opengate/internal/config"
+	"github.com/saief1/opengate/internal/pricing"
+	"github.com/saief1/opengate/internal/store"
 )
 
 func (e *env) logs(query string) []map[string]any {

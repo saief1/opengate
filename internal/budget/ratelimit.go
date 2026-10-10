@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/store"
+	"github.com/saief1/opengate/internal/store"
 )
 
 // RateStore is a pluggable token-bucket backend (requests per minute).

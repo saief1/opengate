@@ -5,7 +5,7 @@ COPY go.mod go.sum ./
 RUN go mod download && go mod verify
 COPY . .
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X github.com/opengate-dev/opengate/internal/server.Version=${VERSION}" -o /out/opengate ./cmd/opengate \
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X github.com/saief1/opengate/internal/server.Version=${VERSION}" -o /out/opengate ./cmd/opengate \
  && mkdir -p /out/data
 
 # Distroless static: no shell, no package manager, runs as non-root.

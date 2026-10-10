@@ -20,8 +20,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/config"
-	"github.com/opengate-dev/opengate/internal/store"
+	"github.com/saief1/opengate/internal/config"
+	"github.com/saief1/opengate/internal/store"
 )
 
 // ---------- markup ----------

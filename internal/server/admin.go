@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/budget"
-	"github.com/opengate-dev/opengate/internal/store"
+	"github.com/saief1/opengate/internal/budget"
+	"github.com/saief1/opengate/internal/store"
 )
 
 func (s *Server) registerAdmin(mux *http.ServeMux) {

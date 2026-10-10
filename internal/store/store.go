@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/secure"
+	"github.com/saief1/opengate/internal/secure"
 )
 
 func ms(t time.Time) int64 { return t.UnixMilli() }

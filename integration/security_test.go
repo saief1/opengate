@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/config"
+	"github.com/saief1/opengate/internal/config"
 )
 
 // H1: every object-by-id admin route answers 404 for another org's IDs, and

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/store"
-	"github.com/opengate-dev/opengate/internal/storetest"
+	"github.com/saief1/opengate/internal/store"
+	"github.com/saief1/opengate/internal/storetest"
 )
 
 func setup(t *testing.T) (*store.Store, *Enforcer, []Scope, *Alerter) {

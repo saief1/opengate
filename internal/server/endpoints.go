@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/opengate-dev/opengate/internal/config"
-	"github.com/opengate-dev/opengate/internal/provider"
+	"github.com/saief1/opengate/internal/config"
+	"github.com/saief1/opengate/internal/provider"
 )
 
 // ---------- /v1/chat/completions ----------

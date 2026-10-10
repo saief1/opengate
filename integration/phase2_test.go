@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/config"
+	"github.com/saief1/opengate/internal/config"
 )
 
 func (e *env) chatH(key string, body map[string]any, headers map[string]string) *http.Response {

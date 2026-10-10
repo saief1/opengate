@@ -4,8 +4,13 @@ OpenGate holds credentials for every model provider you use, so we treat securit
 
 ## Reporting a vulnerability
 
-Please **do not open public issues for security problems.** Instead, report them privately through
-GitHub's "Report a vulnerability" (Security Advisories) on this repository, or email the maintainers at the security contact listed on the project page (placeholder: set before publishing).
+Please **do not open public issues, discussions or pull requests for security problems.** Report them privately
+through GitHub private vulnerability reporting:
+
+**https://github.com/saief1/opengate/security/advisories/new**
+
+(Repository → *Security* → *Report a vulnerability*.) Only the maintainers can see the report, and we can work on the
+fix and a CVE together in that private advisory.
 Include steps to reproduce, the affected version (`opengate version`) and the impact.
 
 We aim to acknowledge reports within 2 business days and to ship a fix or mitigation for confirmed
@@ -39,7 +44,7 @@ Only the latest 1.x release receives security fixes.
 
 ## Security review log
 
-An internal review on 2026-10-09 (commit a88287b) found no critical issues. Its HIGH finding (org scoping of the
+An internal review on 2026-10-09 (before v1.0.0) found no critical issues. Its HIGH finding (org scoping of the
 phase-1 admin API), all MEDIUM findings and most LOW findings were fixed before v1.0.0, with regression tests in
 `integration/security_test.go`. Known residual items: per-process budget reservations on multi-replica
 deployments (documented), no response-side guard scan for streaming `/v1/responses`, and no master-key rotation command.

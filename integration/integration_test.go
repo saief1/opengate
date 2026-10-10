@@ -16,14 +16,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/config"
-	"github.com/opengate-dev/opengate/internal/mockprovider"
-	"github.com/opengate-dev/opengate/internal/pricing"
-	"github.com/opengate-dev/opengate/internal/secure"
-	"github.com/opengate-dev/opengate/internal/server"
-	"github.com/opengate-dev/opengate/internal/store"
-	"github.com/opengate-dev/opengate/internal/storetest"
-	"github.com/opengate-dev/opengate/web"
+	"github.com/saief1/opengate/internal/config"
+	"github.com/saief1/opengate/internal/mockprovider"
+	"github.com/saief1/opengate/internal/pricing"
+	"github.com/saief1/opengate/internal/secure"
+	"github.com/saief1/opengate/internal/server"
+	"github.com/saief1/opengate/internal/store"
+	"github.com/saief1/opengate/internal/storetest"
+	"github.com/saief1/opengate/web"
 )
 
 const adminToken = "test-admin-token-0123456789"
