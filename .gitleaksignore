@@ -1,0 +1,9 @@
+# Fake credentials used as test fixtures (guardrail/redaction and validation tests). Reviewed 2026-10-10.
+ac63743eef298889fe3107c9ab841b48eb6589e5:integration/phase3_test.go:generic-api-key:199
+10b9b0add9af704623f03f81567a84837199e21d:internal/guard/guard_test.go:private-key:40
+10b9b0add9af704623f03f81567a84837199e21d:internal/guard/guard_test.go:jwt:38
+1d3a0ece4b4a1e00c18d8ca28e4bbec6770092e4:internal/config/config_test.go:generic-api-key:67
+integration/phase3_test.go:generic-api-key:199
+internal/config/config_test.go:generic-api-key:67
+internal/guard/guard_test.go:private-key:40
+internal/guard/guard_test.go:jwt:38
