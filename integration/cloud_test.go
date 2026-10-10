@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/cloud"
-	"github.com/opengate-dev/opengate/internal/config"
-	"github.com/opengate-dev/opengate/internal/stripemock"
+	"github.com/saief1/opengate/internal/cloud"
+	"github.com/saief1/opengate/internal/config"
+	"github.com/saief1/opengate/internal/stripemock"
 )
 
 const whsec = "whsec_test_secret_for_integration"

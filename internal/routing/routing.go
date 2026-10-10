@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/opengate-dev/opengate/internal/store"
+	"github.com/saief1/opengate/internal/store"
 )
 
 // Request describes a chat request for routing decisions.

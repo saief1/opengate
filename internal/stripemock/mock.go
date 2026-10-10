@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/cloud"
+	"github.com/saief1/opengate/internal/cloud"
 )
 
 // Mock is a fake Stripe server. Create with New, then serve Handler().

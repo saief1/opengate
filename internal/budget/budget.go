@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/store"
+	"github.com/saief1/opengate/internal/store"
 )
 
 // Periods for spend limits. All periods are calendar periods in UTC.

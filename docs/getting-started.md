@@ -10,7 +10,7 @@ OpenGate is one static binary (`opengate`) that serves an OpenAI-compatible gate
 tar xzf opengate_1.0.0_linux_amd64.tar.gz && sudo mv opengate /usr/local/bin/
 
 # or from source (Go 1.27+, no CGO)
-git clone https://github.com/opengate-dev/opengate && cd opengate && make build   # -> bin/opengate
+git clone https://github.com/saief1/opengate && cd opengate && make build   # -> bin/opengate
 
 # or the container (distroless, non-root, read-only rootfs)
 docker compose up -d

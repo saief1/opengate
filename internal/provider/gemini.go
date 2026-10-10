@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/secure"
+	"github.com/saief1/opengate/internal/secure"
 )
 
 // Gemini translates OpenAI chat requests to Google's generateContent API.

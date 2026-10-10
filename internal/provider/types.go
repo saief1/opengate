@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/opengate-dev/opengate/internal/config"
+	"github.com/saief1/opengate/internal/config"
 )
 
 // ChatRequest is the subset of the OpenAI chat request OpenGate understands.

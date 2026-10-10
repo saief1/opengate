@@ -16,7 +16,7 @@ builds:
     env: [CGO_ENABLED=0]
     flags: [-trimpath]
     ldflags:
-      - -s -w -X github.com/opengate-dev/opengate/internal/server.Version={{ .Version }}
+      - -s -w -X github.com/saief1/opengate/internal/server.Version={{ .Version }}
     goos: [linux, darwin, windows, freebsd]
     goarch: [amd64, arm64]
     ignore:
@@ -56,8 +56,8 @@ changelog:
     exclude: ["^gofmt$", "^docs:", "^test:"]
 
 release:
-  github:                # placeholder until the domain/org is final
-    owner: opengate-dev
+  github:
+    owner: saief1
     name: opengate
   draft: true            # review before publishing
   prerelease: auto

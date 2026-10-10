@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/secure"
+	"github.com/saief1/opengate/internal/secure"
 )
 
 // RouteMatch holds the conditions of a routing rule. All set conditions must

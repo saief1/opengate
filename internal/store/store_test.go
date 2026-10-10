@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/secure"
-	"github.com/opengate-dev/opengate/internal/storetest"
+	"github.com/saief1/opengate/internal/secure"
+	"github.com/saief1/opengate/internal/storetest"
 )
 
 func newStore(t *testing.T) *Store {

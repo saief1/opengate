@@ -17,7 +17,7 @@ services:
       retries: 10
 
   opengate:
-    image: ${OPENGATE_IMAGE:-ghcr.io/opengate-dev/opengate:latest}
+    image: ${OPENGATE_IMAGE:-ghcr.io/saief1/opengate:latest}
     build: {context: .., dockerfile: Dockerfile}
     restart: unless-stopped
     depends_on:

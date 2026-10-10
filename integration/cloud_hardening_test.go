@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/cloud"
-	"github.com/opengate-dev/opengate/internal/config"
-	"github.com/opengate-dev/opengate/internal/store"
-	"github.com/opengate-dev/opengate/internal/stripemock"
+	"github.com/saief1/opengate/internal/cloud"
+	"github.com/saief1/opengate/internal/config"
+	"github.com/saief1/opengate/internal/store"
+	"github.com/saief1/opengate/internal/stripemock"
 )
 
 func waitFor(t *testing.T, what string, cond func() bool) {

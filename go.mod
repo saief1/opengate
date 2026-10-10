@@ -1,4 +1,4 @@
-module github.com/opengate-dev/opengate
+module github.com/saief1/opengate
 
 go 1.27.2
 

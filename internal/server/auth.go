@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/secure"
-	"github.com/opengate-dev/opengate/internal/store"
+	"github.com/saief1/opengate/internal/secure"
+	"github.com/saief1/opengate/internal/store"
 )
 
 const (

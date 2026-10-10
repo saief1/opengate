@@ -14,10 +14,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/budget"
-	"github.com/opengate-dev/opengate/internal/cloud"
-	"github.com/opengate-dev/opengate/internal/config"
-	"github.com/opengate-dev/opengate/internal/store"
+	"github.com/saief1/opengate/internal/budget"
+	"github.com/saief1/opengate/internal/cloud"
+	"github.com/saief1/opengate/internal/config"
+	"github.com/saief1/opengate/internal/store"
 )
 
 // cloudState is present only when cloud.enabled.

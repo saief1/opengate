@@ -13,13 +13,13 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/opengate-dev/opengate/internal/billing"
-	"github.com/opengate-dev/opengate/internal/budget"
-	"github.com/opengate-dev/opengate/internal/guard"
-	"github.com/opengate-dev/opengate/internal/pricing"
-	"github.com/opengate-dev/opengate/internal/provider"
-	"github.com/opengate-dev/opengate/internal/routing"
-	"github.com/opengate-dev/opengate/internal/store"
+	"github.com/saief1/opengate/internal/billing"
+	"github.com/saief1/opengate/internal/budget"
+	"github.com/saief1/opengate/internal/guard"
+	"github.com/saief1/opengate/internal/pricing"
+	"github.com/saief1/opengate/internal/provider"
+	"github.com/saief1/opengate/internal/routing"
+	"github.com/saief1/opengate/internal/store"
 )
 
 // ---------- small TTL cache for DB-backed settings on the hot path ----------

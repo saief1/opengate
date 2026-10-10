@@ -20,13 +20,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/billing"
-	"github.com/opengate-dev/opengate/internal/budget"
-	"github.com/opengate-dev/opengate/internal/config"
-	"github.com/opengate-dev/opengate/internal/pricing"
-	"github.com/opengate-dev/opengate/internal/provider"
-	"github.com/opengate-dev/opengate/internal/secure"
-	"github.com/opengate-dev/opengate/internal/store"
+	"github.com/saief1/opengate/internal/billing"
+	"github.com/saief1/opengate/internal/budget"
+	"github.com/saief1/opengate/internal/config"
+	"github.com/saief1/opengate/internal/pricing"
+	"github.com/saief1/opengate/internal/provider"
+	"github.com/saief1/opengate/internal/secure"
+	"github.com/saief1/opengate/internal/store"
 )
 
 func init() {

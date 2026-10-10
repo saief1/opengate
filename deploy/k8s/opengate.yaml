@@ -22,7 +22,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: opengate
-          image: ghcr.io/opengate-dev/opengate:latest   # TODO: pin a version tag / digest
+          image: ghcr.io/saief1/opengate:latest   # TODO: pin a version tag / digest
           args: ["serve", "-config", "/etc/opengate/cloud.yaml"]
           ports: [{name: http, containerPort: 8080}]
           envFrom: [{secretRef: {name: opengate}}]

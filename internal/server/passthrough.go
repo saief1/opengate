@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/opengate-dev/opengate/internal/provider"
-	"github.com/opengate-dev/opengate/internal/store"
+	"github.com/saief1/opengate/internal/provider"
+	"github.com/saief1/opengate/internal/store"
 )
 
 // Raw OpenAI-compatible requests are forwarded with unknown fields intact.

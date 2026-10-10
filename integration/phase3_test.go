@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/opengate-dev/opengate/internal/config"
-	"github.com/opengate-dev/opengate/internal/secure"
-	"github.com/opengate-dev/opengate/internal/store"
+	"github.com/saief1/opengate/internal/config"
+	"github.com/saief1/opengate/internal/secure"
+	"github.com/saief1/opengate/internal/store"
 )
 
 // browser is a cookie-carrying dashboard client.

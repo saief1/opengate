@@ -52,7 +52,7 @@ OpenGate's answer:
 ### Option A: try it with the bundled mock provider (no API keys)
 
 ```bash
-git clone https://github.com/opengate-dev/opengate && cd opengate
+git clone https://github.com/saief1/opengate && cd opengate
 make demo          # builds, starts a mock upstream + OpenGate, seeds demo traffic
 # open http://127.0.0.1:8080/ui/  (admin token: demo-admin-token-change-me)
 ```

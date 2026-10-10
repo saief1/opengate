@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/billing"
-	"github.com/opengate-dev/opengate/internal/guard"
-	"github.com/opengate-dev/opengate/internal/provider"
-	"github.com/opengate-dev/opengate/internal/store"
+	"github.com/saief1/opengate/internal/billing"
+	"github.com/saief1/opengate/internal/guard"
+	"github.com/saief1/opengate/internal/provider"
+	"github.com/saief1/opengate/internal/store"
 )
 
 func (s *Server) registerAdminPhase2(h func(string, http.HandlerFunc)) {

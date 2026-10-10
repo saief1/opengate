@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/opengate-dev/opengate/internal/metrics"
-	"github.com/opengate-dev/opengate/internal/secure"
-	"github.com/opengate-dev/opengate/internal/store"
+	"github.com/saief1/opengate/internal/metrics"
+	"github.com/saief1/opengate/internal/secure"
+	"github.com/saief1/opengate/internal/store"
 )
 
 // gatewayMetrics are the Prometheus series exported on /metrics.
