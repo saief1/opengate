@@ -22,6 +22,8 @@ func (s *Server) registerAdmin(mux *http.ServeMux) {
 		writeJSON(w, 200, map[string]string{"status": "ok", "version": Version})
 	})
 	h("GET /admin/api/overview", s.adminOverview)
+	h("GET /admin/api/series", s.adminSeries)
+	h("GET /admin/api/alerts", s.adminAlerts)
 	h("GET /admin/api/logs", s.adminLogs)
 	h("GET /admin/api/logs/{id}", s.adminLog)
 	h("GET /admin/api/projects", s.adminProjects)
@@ -606,7 +608,7 @@ func (s *Server) adminPricing(w http.ResponseWriter, r *http.Request) {
 		p, _ := t.Lookup(prov, model)
 		out[m] = p
 	}
-	writeJSON(w, 200, map[string]any{"source": s.pricing.Source(), "models": out})
+	writeJSON(w, 200, map[string]any{"source": s.pricing.Source(), "models": out, "patterns": t.Patterns()})
 }
 
 func (s *Server) adminReloadPricing(w http.ResponseWriter, r *http.Request) {

@@ -14,10 +14,10 @@ security:
 tags:
   - name: "Auth"
   - name: "Monitor"
+  - name: "Budgets"
   - name: "Projects"
   - name: "Guardrails"
   - name: "Keys"
-  - name: "Budgets"
   - name: "Providers"
   - name: "Routing"
   - name: "Cache"
@@ -517,6 +517,74 @@ paths:
         - "Monitor"
       summary: "Spend/requests summary, charts, top models/keys/routes/customers"
       operationId: "get_overview"
+      x-min-role: "viewer"
+      responses:
+        "200":
+          description: "OK"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/api/series:
+    get:
+      tags:
+        - "Monitor"
+      summary: "Rolling-window summary, p50/p95 latency and spend series grouped by provider, agent, key, customer, model or block reason"
+      operationId: "get_series"
+      x-min-role: "viewer"
+      responses:
+        "200":
+          description: "OK"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/api/alerts:
+    get:
+      tags:
+        - "Budgets"
+      summary: "Budget alert webhook status (host only) and recent threshold alerts"
+      operationId: "get_alerts"
       x-min-role: "viewer"
       responses:
         "200":

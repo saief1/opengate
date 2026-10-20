@@ -69,6 +69,8 @@ r("POST", "/admin/api/auth/password", "Auth", "Change own password", "public", o
 r("GET", "/admin/api/whoami", "Auth", "Who is calling", resp=S("Me"))
 # Monitoring
 r("GET", "/admin/api/overview", "Monitor", "Spend/requests summary, charts, top models/keys/routes/customers")
+r("GET", "/admin/api/series", "Monitor", "Rolling-window summary, p50/p95 latency and spend series grouped by provider, agent, key, customer, model or block reason")
+r("GET", "/admin/api/alerts", "Budgets", "Budget alert webhook status (host only) and recent threshold alerts")
 r("GET", "/admin/api/logs", "Monitor", "Request logs (filters: key_id, project_id, agent, model, customer_id, errors=1, guard=1, limit, offset)", resp=listOf(S("RequestLog")))
 r("GET", "/admin/api/logs/{id}", "Monitor", "One request log incl. bodies when logged", resp=S("RequestLog"))
 r("GET", "/admin/api/audit", "Monitor", "Audit log of admin actions", resp=listOf(S("AuditEntry")))

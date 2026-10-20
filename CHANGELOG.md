@@ -5,6 +5,19 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] (v2-dev)
 
+### Dashboard design v2
+
+- New dashboard (`/ui/`) built from the approved SaaS v2 design: near-black theme, Geist / Geist Mono (embedded, OFL),
+  Cursor-style sidebar with ⌘K jump-to, and 13 screens (overview, requests, request detail, keys, agents, customers,
+  budgets, policies & kill switch, providers, setup, team & settings, plan & billing, sign-in / sign-up). Every number
+  comes from the admin API; empty data shows an empty state instead of placeholders.
+- Landing page at `/ui/landing.html`. Pricing on it and on the billing page is labelled as a draft (`DRAFT_PLANS` /
+  `PRICING_DRAFT` in `web/static/app.js`; Cloud reads its plans from the config).
+- `GET /admin/api/series`: rolling-window summary, comparison with the previous window, p50/p95 latency and a spend
+  series grouped by provider, agent, key, customer, model or block reason (hour or day buckets).
+- `GET /admin/api/alerts`: whether budget alert webhooks are configured (host only) and the org's recent alerts.
+- `GET /admin/api/pricing` also returns wildcard `patterns`.
+
 ### Stripe hardening (review of docs/stripe-integration-plan.md; verified live in Stripe test mode)
 
 - Meter sync reports fixed, epoch-aligned windows with deterministic identifiers, a compare-and-swap cursor and a

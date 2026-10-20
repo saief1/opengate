@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 )
@@ -328,4 +329,111 @@ func (s *Store) MarkAlertSent(ctx context.Context, scope, scopeID, period string
 	}
 	n, _ := res.RowsAffected()
 	return n == 1, nil
+}
+
+// GroupPoint is one bucket of a spend series grouped by an arbitrary dimension.
+type GroupPoint struct {
+	Bucket   time.Time `json:"bucket"`
+	Name     string    `json:"name"`
+	CostUSD  float64   `json:"cost_usd"`
+	Requests int       `json:"requests"`
+}
+
+// GroupSeries buckets spend and request counts since t, grouped by "provider",
+// "agent", "key", "customer", "model" or "blocked" (error_code of refused
+// requests only).
+func (s *Store) GroupSeries(ctx context.Context, f StatsFilter, by string, since time.Time, bucket time.Duration) ([]GroupPoint, error) {
+	col := map[string]string{
+		"provider": "CASE WHEN provider='' THEN '(rejected)' ELSE provider END",
+		"agent":    "CASE WHEN agent='' THEN '(none)' ELSE agent END",
+		"key":      "key_id",
+		"customer": "customer_id",
+		"model":    "model",
+		"blocked":  "error_code",
+	}[by]
+	if col == "" {
+		return nil, errors.New("bad group")
+	}
+	extra := ""
+	switch by {
+	case "customer":
+		extra = " AND customer_id<>''"
+	case "blocked":
+		extra = " AND error_code IN ('budget_exceeded','key_killed','project_killed','killed','killed_mid_stream','rate_limit_exceeded','model_not_allowed','max_tokens_exceeded','guardrail_blocked','prompt_injection')"
+	}
+	b := bucket.Milliseconds()
+	w, wa := f.where()
+	rows, err := s.query(ctx, `SELECT (ts/?)*? AS b, `+col+` AS g, COALESCE(SUM(cost_usd),0), COUNT(*)
+FROM request_logs WHERE ts>=?`+w+extra+` GROUP BY b, g ORDER BY b`, append([]any{b, b, ms(since)}, wa...)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []GroupPoint{}
+	for rows.Next() {
+		var p GroupPoint
+		var bk int64
+		if err := rows.Scan(&bk, &p.Name, &p.CostUSD, &p.Requests); err != nil {
+			return nil, err
+		}
+		p.Bucket = fromMS(bk)
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// LatencyPercentiles returns p50 and p95 latency (ms) of successful requests
+// since t, computed over at most the 100k most recent rows.
+func (s *Store) LatencyPercentiles(ctx context.Context, f StatsFilter, since time.Time) (p50, p95 float64, n int, err error) {
+	w, wa := f.where()
+	rows, err := s.query(ctx, `SELECT latency_ms FROM request_logs WHERE ts>=? AND status<400 AND cache_hit=0`+w+` ORDER BY ts DESC LIMIT 100000`, append([]any{ms(since)}, wa...)...)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	defer rows.Close()
+	var v []float64
+	for rows.Next() {
+		var x float64
+		if err := rows.Scan(&x); err != nil {
+			return 0, 0, 0, err
+		}
+		v = append(v, x)
+	}
+	if len(v) == 0 {
+		return 0, 0, 0, rows.Err()
+	}
+	sort.Float64s(v)
+	at := func(q float64) float64 { return v[int(q*float64(len(v)-1))] }
+	return at(.5), at(.95), len(v), rows.Err()
+}
+
+// SentAlert is one budget threshold alert that was delivered (or attempted).
+type SentAlert struct {
+	Scope       string    `json:"scope"`
+	ScopeID     string    `json:"scope_id"`
+	Period      string    `json:"period"`
+	PeriodStart time.Time `json:"period_start"`
+	Threshold   float64   `json:"threshold"`
+	SentAt      time.Time `json:"sent_at"`
+}
+
+// RecentAlerts lists the most recently sent budget alerts (all orgs; callers
+// filter by scope ownership).
+func (s *Store) RecentAlerts(ctx context.Context, limit int) ([]SentAlert, error) {
+	rows, err := s.query(ctx, `SELECT scope, scope_id, period, period_start, threshold, sent_at FROM alerts_sent ORDER BY sent_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SentAlert{}
+	for rows.Next() {
+		var a SentAlert
+		var ps, sa int64
+		if err := rows.Scan(&a.Scope, &a.ScopeID, &a.Period, &ps, &a.Threshold, &sa); err != nil {
+			return nil, err
+		}
+		a.PeriodStart, a.SentAt = fromMS(ps), fromMS(sa)
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
