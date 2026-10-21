@@ -243,6 +243,7 @@ func createUser(args []string) error {
 	if err != nil {
 		return err
 	}
+	*role = store.NormalizeRole(*role)
 	if store.RoleRank(*role) == 0 {
 		return fmt.Errorf("invalid role %q", *role)
 	}

@@ -84,6 +84,10 @@ type Config struct {
 	// StripeWebhookSecret (STRIPE_WEBHOOK_SECRET, "whsec_...") verifies
 	// Stripe webhook signatures in cloud mode.
 	StripeWebhookSecret string `yaml:"-"`
+	// StripeAllowLive (OPENGATE_STRIPE_ALLOW_LIVE=true) permits live-mode
+	// Stripe keys. Off by default so a misplaced sk_live_ key can't charge
+	// real cards from a test deployment.
+	StripeAllowLive bool `yaml:"-"`
 }
 
 // MCPConfig configures the MCP (Model Context Protocol) tool gateway.
@@ -445,6 +449,9 @@ func (c *Config) applyEnv() {
 	set(&c.StripeWebhookSecret, "STRIPE_WEBHOOK_SECRET")
 	set(&c.Cloud.PublicURL, "OPENGATE_PUBLIC_URL")
 	set(&c.Plan, "OPENGATE_PLAN")
+	if v := os.Getenv("OPENGATE_STRIPE_ALLOW_LIVE"); v == "1" || strings.EqualFold(v, "true") {
+		c.StripeAllowLive = true
+	}
 	if v := os.Getenv("OPENGATE_CORS_ORIGINS"); v != "" {
 		c.CORSOrigins = nil
 		for _, o := range strings.Split(v, ",") {
@@ -700,6 +707,9 @@ func (c *Config) normalizePhase2() error {
 
 // ValidateStripe checks that Stripe sync / cloud billing have their secrets.
 func (c *Config) ValidateStripe() error {
+	if (strings.HasPrefix(c.StripeAPIKey, "sk_live_") || strings.HasPrefix(c.StripeAPIKey, "rk_live_")) && !c.StripeAllowLive {
+		return errors.New("STRIPE_API_KEY is a live-mode key; OpenGate only accepts test-mode keys (sk_test_/rk_test_) unless OPENGATE_STRIPE_ALLOW_LIVE=true is set")
+	}
 	if c.Billing.Stripe.Enabled && c.StripeAPIKey == "" {
 		return errors.New("billing.stripe.enabled requires STRIPE_API_KEY in the environment")
 	}

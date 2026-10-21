@@ -203,16 +203,24 @@ const ICONS = {
   setup: [["path", { d: "m16 18 6-6-6-6M8 6l-6 6 6 6" }]],
   settings: [["circle", { cx: 12, cy: 12, r: 3 }], ["path", { d: "M12 2v3M12 19v3M2 12h3M19 12h3" }]],
   billing: [["rect", { x: 3, y: 5, width: 18, height: 14, rx: 2 }], ["path", { d: "M3 10h18" }]],
+  mcp: [["rect", { x: 3, y: 4, width: 7, height: 7, rx: 1.5 }], ["rect", { x: 14, y: 13, width: 7, height: 7, rx: 1.5 }], ["path", { d: "M10 7.5h4a3 3 0 0 1 3 3V13M14 16.5h-4a3 3 0 0 1-3-3V11" }]],
+  audit: [["path", { d: "M6 3h9l4 4v14H6z" }], ["path", { d: "M14 3v5h5M9 13h7M9 17h5" }]],
 };
 const svgIcon = (name) => el("svg", { viewBox: "0 0 24 24" }, ICONS[name].map(([t, a]) => el(t, a)));
 const logoSvg = (s) => el("div", { class: "logo" }, el("svg", { width: s || 12, height: s || 12, viewBox: "0 0 24 24", fill: "none", stroke: "#fff", "stroke-width": 2.6, "stroke-linecap": "round" }, el("path", { d: "M5 20V9l7-5 7 5v11" }), el("path", { d: "M10 20v-5h4v5" })));
 const NAV = [
   ["overview", "Overview"], ["requests", "Requests", "requests"], ["keys", "Keys", "keys"], ["agents", "Agents", "agents"], ["customers", "Customers", "customers"],
-  "Control", ["budgets", "Budgets"], ["policies", "Policies"], ["providers", "Providers & models"], ["kill", "Kill switch", null, "policies"],
-  "Workspace", ["setup", "Setup & SDK"], ["settings", "Settings", null, "team"], ["billing", "Plan & billing"],
+  "Control", ["budgets", "Budgets"], ["policies", "Policies"], ["mcp", "MCP tools", "mcp"], ["providers", "Providers & models"], ["kill", "Kill switch", null, "policies"],
+  "Workspace", ["setup", "Setup & SDK"], ["settings", "Settings", null, "team"], ["audit", "Audit log"], ["billing", "Plan & billing"],
 ];
 const TITLES = { overview: "Overview", requests: "Requests", keys: "Keys", agents: "Agents", customers: "Cost per customer", budgets: "Budgets & alerts", policies: "Kill switch & policies",
-  providers: "Providers & models", setup: "Setup & SDK", team: "Team & settings", billing: "Plan & billing" };
+  providers: "Providers & models", setup: "Setup & SDK", team: "Team & settings", billing: "Plan & billing", mcp: "MCP tool gateway", audit: "Audit log" };
+// Roles as shown to people ("viewer" is stored; "read-only" is its label).
+const ROLE_LABEL = { owner: "Owner", admin: "Admin", member: "Member", viewer: "Read-only" };
+const teamOn = (f) => !me.plan || !me.plan.features || me.plan.features[f] !== false;
+function teamLocked(title, text) {
+  return el("div", { class: "empty" }, el("b", {}, title), el("div", {}, text), el("div", { style: { marginTop: "10px" } }, st("vi", "Team plan"), " ", el("a", { href: "#billing", class: "grn" }, "See plans →")));
+}
 
 function route() {
   const h = (location.hash || "#overview").slice(1);
@@ -673,13 +681,28 @@ PAGES.customers = async (root, actions, crumb, r) => {
       card("Daily AI cost · top customers", lineChart(pts, { buckets, bucketSeconds: 86400, height: 140, emptyTitle: "No customer spend this month" }), { sub: mLabel })),
     el("div", { class: "g" },
       card("Margin per customer", el("div", { class: "pad t2", style: { fontSize: "12.5px", lineHeight: 1.6 } }, "Stripe revenue minus AI cost, per customer. Planned, not built yet. Billed-with-markup totals on the left are real."), { right: SOON() }),
-      card("Markup rules", el("div", {}, mk.data.length ? kvr([["Default", def ? (1 + def.markup_pct / 100).toFixed(2) + "×" : "none (billed at cost)"],
-        ...mk.data.filter((m) => m !== def).slice(0, 5).map((m) => [[m.customer_id || null, m.project_id ? projName(m.project_id) : null, m.model || null].filter(Boolean).join(" · ") || "rule", (1 + m.markup_pct / 100).toFixed(2) + "×"]),
-        ["Header", c.header || "X-OpenGate-Customer"]]) : empty("No markup rules", "Customers are billed at cost until you add one (admin API: POST /admin/api/billing/markups).")), { sub: "applied to billed_usd" }),
+      card("Markup rules", el("div", {}, mk.data.length ? kvr([["Default", def ? markupLabel(def) : "none (billed at cost)"],
+        ...mk.data.filter((m) => m !== def).slice(0, 5).map((m) => [[m.customer_id || null, m.project_id ? projName(m.project_id) : null, m.model || null].filter(Boolean).join(" · ") || "rule", markupLabel(m)]),
+        ["Header", c.header || "X-OpenGate-Customer"]]) : empty("No markup rules", "Customers are billed at cost until you add one.")), { sub: "applied to billed_usd", right: can("admin") ? (teamOn("customer_billing") ? el("button", { class: "btn sm", onclick: () => markupModal(mk.data) }, "+ Rule") : st("vi", "Team plan")) : null }),
       card("Stripe sync", el("div", {}, kvr([["Status", sp.enabled ? st("ok", "enabled") : st("mu", "disabled in config")], ["Last push", lastPush ? ago(lastPush) : "never"], ["Meter event", sp.event_name || "—"],
         ["Unit", sp.unit || "—"], ["Interval", sp.interval_seconds ? Math.round(sp.interval_seconds / 60) + " min" : "—"], ["Linked customers", num((sp.customers || []).length)]])),
         { right: can("admin") && sp.enabled ? el("button", { class: "btn sm", onclick: async () => { await api("/billing/stripe/sync", { method: "POST" }); toast("Sync started"); render(); } }, "Sync now") : null }))));
 };
+const markupLabel = (m) => (1 + m.markup_pct / 100).toFixed(2) + "×" + (m.per_mtok_usd ? " + " + usd(m.per_mtok_usd) + "/1M tok" : "");
+function markupModal(rules) {
+  const cust = el("input", { class: "inp", placeholder: "any customer" }), model = el("input", { class: "inp", placeholder: "any model, e.g. openai/*" });
+  const proj = el("select", { class: "inp" }, el("option", { value: "" }, "any project"), S.projects.map((p) => el("option", { value: p.id }, p.name)));
+  const pctI = el("input", { class: "inp", type: "number", step: "0.1", value: "20" }), tok = el("input", { class: "inp", type: "number", step: "0.01", min: 0, value: "0" });
+  modal("New markup rule", el("form", { class: "form", onsubmit: async (e) => {
+    e.preventDefault();
+    await api("/billing/markups", { method: "POST", body: { customer_id: cust.value.trim(), model: model.value.trim(), project_id: proj.value, markup_pct: +pctI.value || 0, per_mtok_usd: +tok.value || 0 } });
+    closeModal(); toast("Markup rule added"); render();
+  } }, el("div", { class: "row2" }, el("label", {}, "Customer", cust), el("label", {}, "Project", proj)), el("label", {}, "Model pattern", model),
+    el("div", { class: "row2" }, el("label", {}, "Markup %", pctI), el("label", {}, "Per 1M tokens (USD)", tok)),
+    el("div", { class: "hint" }, "billed = cost × (1 + markup%) + tokens ÷ 1M × fee. The most specific rule wins (customer > model > project). Billed amounts are pushed to Stripe (test mode) when billing.stripe is enabled."),
+    rules.length ? el("div", { class: "hint" }, rules.length + " existing rule" + (rules.length === 1 ? "" : "s")) : null,
+    el("div", { class: "acts2" }, el("button", { class: "btn", type: "button", onclick: closeModal }, "Cancel"), el("button", { class: "btn gr", type: "submit" }, "Add rule"))));
+}
 function customerModal(r) {
   if (!can("admin")) return;
   const name = el("input", { class: "inp", value: r.name || "" }), sid = el("input", { class: "inp", value: r.stripe_customer_id || "", placeholder: "cus_…" });
@@ -937,7 +960,8 @@ PAGES.team = async (root) => {
   const plan = billing && billing.effective_plan;
   const pending = inv.data.filter((i) => String(i.accepted_at).startsWith("0001"));
   const email = el("input", { class: "inp", type: "email", required: true, placeholder: "name@company.com", style: { flex: 1 } });
-  const role = el("select", { class: "inp" }, ["viewer", "member", "admin"].map((r) => el("option", { value: r, selected: r === "member" }, r)));
+  const roleOpts = teamOn("roles") ? ["viewer", "member", "admin"] : ["admin"];
+  const role = el("select", { class: "inp", title: teamOn("roles") ? "" : "Member and read-only roles are part of the Team plan" }, roleOpts.map((r) => el("option", { value: r, selected: r === (teamOn("roles") ? "member" : "admin") }, ROLE_LABEL[r])));
   const invite = can("admin") ? el("form", { style: { display: "flex", gap: "8px", padding: "12px 16px", borderBottom: "1px solid var(--ln)" }, onsubmit: async (e) => {
     e.preventDefault(); const r = await api("/invites", { method: "POST", body: { email: email.value, role: role.value } });
     const link = location.origin + "/ui/#invite=" + r.token;
@@ -949,13 +973,13 @@ PAGES.team = async (root) => {
     el("span", {}, el("div", {}, u.name || u.email.split("@")[0]), el("div", { class: "m mut", style: { fontSize: "11px" } }, u.email)))),
     el("td", { class: "mut" }, me.user && me.user.id === u.id ? "Now" : ago(u.last_login_at)),
     el("td", {}, can("admin") && u.role !== "owner" ? el("select", { class: "inp", style: { padding: "3px 24px 3px 8px", fontSize: "11.5px" }, onchange: async (e) => { await api("/members/" + u.id, { method: "PATCH", body: { role: e.target.value } }); toast("Role updated"); render(); } },
-      ["viewer", "member", "admin", ...(can("owner") ? ["owner"] : [])].map((r) => el("option", { value: r, selected: r === u.role }, r))) : st(ROLE_ST[u.role] || "mu", u.role[0].toUpperCase() + u.role.slice(1))),
+      [...(teamOn("roles") || u.role === "viewer" ? ["viewer"] : []), ...(teamOn("roles") || u.role === "member" ? ["member"] : []), "admin", ...(can("owner") ? ["owner"] : [])].map((r) => el("option", { value: r, selected: r === u.role }, ROLE_LABEL[r]))) : st(ROLE_ST[u.role] || "mu", ROLE_LABEL[u.role] || u.role)),
     el("td", { class: "r" }, can("admin") && u.role !== "owner" ? el("button", { class: "btn sm", onclick: async () => { if (confirm("Remove " + u.email + "?")) { await api("/members/" + u.id, { method: "DELETE" }); render(); } } }, "Remove") : null))),
-  ...pending.map((i) => el("tr", {}, el("td", {}, el("span", { class: "t2" }, i.email), " ", st("rt", "invited")), el("td", { class: "mut" }, "expires " + dateShort(i.expires_at)), el("td", {}, st("mu", i.role)),
+  ...pending.map((i) => el("tr", {}, el("td", {}, el("span", { class: "t2" }, i.email), " ", st("rt", "invited")), el("td", { class: "mut" }, "expires " + dateShort(i.expires_at)), el("td", {}, st("mu", ROLE_LABEL[i.role] || i.role)),
     el("td", { class: "r" }, can("admin") ? el("button", { class: "btn sm", onclick: async () => { await api("/invites/" + i.id, { method: "DELETE" }); render(); } }, "Revoke") : null)))];
   const auditRows = audit.data.map((a) => el("div", { class: "kvr" }, el("span", { style: { color: "var(--tx)" } }, el("b", { style: { fontWeight: 500 } }, a.actor_email || (a.actor_type === "token" ? "admin token" : a.actor_type)), " ",
     el("span", { class: "t2" }, a.action.replace(/\./g, " ")), " ", el("span", { class: "m grn", style: { fontSize: "12px" } }, a.target ? (keyById(a.target) ? keyById(a.target).name : a.target) : "")), el("span", { class: "mut" }, ago(a.ts))));
-  const exportAudit = async () => { const all = await api("/audit?limit=500"); download("opengate-audit.csv", toCSV([["ts", "actor", "action", "target", "status", "ip"], ...all.data.map((a) => [a.ts, a.actor_email || a.actor_type, a.action, a.target, a.status, a.ip])])); };
+  const exportAudit = () => exportAuditCSV("");
   const toggleBodies = (p) => can("admin") ? el("button", { class: "tog" + (p.log_bodies ? " on" : ""), title: p.name, onclick: async () => { await api("/projects/" + p.id, { method: "PATCH", body: { log_bodies: !p.log_bodies } }); toast(`Body logging ${p.log_bodies ? "off" : "on"} for ${p.name}`); render(); } }) : el("span", { class: "tog" + (p.log_bodies ? " on" : "") });
   const seats = plan && plan.max_members ? [num(m.data.length), el("small", {}, " / " + plan.max_members)] : num(m.data.length);
   const pw = me.kind === "user" ? (() => { const cur = el("input", { class: "inp", type: "password", autocomplete: "current-password", placeholder: "current" }), nw = el("input", { class: "inp", type: "password", autocomplete: "new-password", minlength: 10, placeholder: "new (10+ chars)" });
@@ -964,16 +988,18 @@ PAGES.team = async (root) => {
   root.append(el("div", { class: "g split420" },
     el("div", { class: "g" },
       kpis([["Seats", seats, plan ? plan.name + " plan" : "self-hosted · no seat limit"], ["Projects", num(S.projects.length), plan ? (plan.max_projects ? `of ${plan.max_projects} on ${plan.name}` : "unlimited on " + plan.name) : "unlimited"], ["Pending invites", num(pending.length), "invite by email link"]]),
-      card("Members", el("div", {}, invite, table(["Member", "Last active", "Role", ""], rows), el("div", { class: "note" }, "viewer reads · member creates keys and pulls kill switches · admin manages the org · owner manages billing")), { sub: `${m.data.length} member${m.data.length === 1 ? "" : "s"}` + (plan && plan.max_members ? ` of ${plan.max_members} seats` : "") }),
-      card("Audit log", auditRows.length ? el("div", {}, auditRows) : empty("No audit events yet"), { right: el("button", { class: "btn sm", onclick: exportAudit }, "Export") })),
+      card("Members", el("div", {}, invite, table(["Member", "Last active", "Role", ""], rows), el("div", { class: "note" }, "read-only views everything · member creates keys and pulls kill switches · admin manages budgets, policies, MCP and the org · owner manages billing and owners", teamOn("roles") ? null : [" · ", st("vi", "Team plan"), " unlocks member and read-only roles"])), { sub: `${m.data.length} member${m.data.length === 1 ? "" : "s"}` + (plan && plan.max_members ? ` of ${plan.max_members} seats` : "") }),
+      card("Audit log", !teamOn("audit_log") ? teamLocked("Audit log is a Team feature", "Admin actions are still recorded; upgrade to view and export them.") : auditRows.length ? el("div", {}, auditRows) : empty("No audit events yet"),
+        { right: teamOn("audit_log") ? el("span", { style: { display: "flex", gap: "6px" } }, el("button", { class: "btn sm", onclick: exportAudit }, "Export"), el("a", { class: "btn sm", href: "#audit" }, "Open")) : null })),
     el("div", { class: "g" },
-      card("Organization", el("div", {}, kvr([["Name", org.name], ["ID", org.id], ["Your role", me.kind === "token" ? "operator (admin token)" : org.role], ["Projects", S.projects.map((p) => p.name).join(" · ") || "—"], ["Database", S.cfg.database || "—"]])),
+      card("Organization", el("div", {}, kvr([["Name", org.name], ["ID", org.id], ["Your role", me.kind === "token" ? "operator (admin token)" : ROLE_LABEL[org.role] || org.role], ["Projects", S.projects.map((p) => p.name).join(" · ") || "—"], ["Database", S.cfg.database || "—"]])),
         { right: can("owner") ? el("button", { class: "btn sm", onclick: async () => { const n = prompt("Organization name", org.name); if (n && n !== org.name) { await api("/org", { method: "PATCH", body: { name: n } }); await loadMe(); render(); } } }, "Rename") : null }),
       card("Security", el("div", {},
         S.projects.map((p) => el("div", { class: "kvr" }, el("span", {}, "Request body logging", el("span", { class: "m mut", style: { fontSize: "11px", marginLeft: "8px" } }, p.name)), toggleBodies(p))),
         kvr([["Session idle timeout", S.cfg.auth ? S.cfg.auth.session_ttl.replace(/0m0s$/, "").replace(/m0s$/, "m") : "—"], ["Log retention", plan && plan.log_retention_days ? `${plan.log_retention_days} days · ${plan.name} plan` : "unlimited (self-hosted)"],
           ["Admin lockout", S.cfg.admin_lockout ? `${S.cfg.admin_lockout.max_failures} failures / ${S.cfg.admin_lockout.window}` : "—"]]),
-        pw, el("div", { class: "kvr" }, el("span", {}, "SSO · OIDC / SAML"), SOON()), el("div", { class: "kvr" }, el("span", {}, "Two-factor auth"), SOON()), el("div", { class: "kvr" }, el("span", {}, "Master-key rotation"), SOON())), { sub: "argon2id passwords · HttpOnly sessions" }))));
+        pw, el("div", { class: "kvr" }, el("span", {}, "SSO · OIDC / SAML"), SOON()), el("div", { class: "kvr" }, el("span", {}, "Two-factor auth"), SOON()), el("div", { class: "kvr" }, el("span", {}, "Master-key rotation"), SOON()),
+        el("div", { class: "kvr" }, el("span", {}, "OpenTelemetry export"), SOON()), el("div", { class: "kvr" }, el("span", {}, "Approval workflows"), SOON())), { sub: "argon2id passwords · HttpOnly sessions" }))));
 };
 
 // ---------- plan & billing ----------
@@ -1086,6 +1112,143 @@ function showAuth(mode) {
   (mode === "token" ? f.token : mode === "invite" ? f.pw : f.email).focus();
 }
 
+// ---------- MCP tool gateway ----------
+async function exportAuditCSV(qs) {
+  const res = await api("/audit/export.csv" + (qs ? "?" + qs : ""), { raw: true });
+  if (!res.ok) return toast(res.status === 402 ? "Audit export is a Team plan feature" : "Export failed", true);
+  download("opengate-audit.csv", await res.text());
+}
+function mcpServerModal(existing) {
+  const m = existing || { transport: "http", auth_header: "Authorization", default_rpm: 0, enabled: true };
+  const name = el("input", { class: "inp m", value: m.name || "", required: true, disabled: !!existing, placeholder: "github", pattern: "[a-z0-9][a-z0-9_-]*" });
+  const url = el("input", { class: "inp m", value: m.url || "", required: true, placeholder: "https://mcp.example.com/mcp" });
+  const tr = el("select", { class: "inp" }, [["http", "Streamable HTTP"], ["sse", "HTTP + SSE (legacy)"]].map(([v, t]) => el("option", { value: v, selected: v === m.transport }, t)));
+  const hdr = el("input", { class: "inp m", value: m.auth_header || "Authorization" });
+  const secret = el("input", { class: "inp m", type: "password", autocomplete: "off", placeholder: existing && m.has_secret ? "stored " + m.secret_hint + " · leave blank to keep" : "e.g. Bearer ghp_… (optional)" });
+  const rpm = el("input", { class: "inp", type: "number", min: 0, value: m.default_rpm || "", placeholder: "unlimited" });
+  modal(existing ? "Edit MCP server · " + m.name : "Add MCP server", el("form", { class: "form", onsubmit: async (e) => {
+    e.preventDefault();
+    const body = { url: url.value.trim(), transport: tr.value, auth_header: hdr.value.trim(), default_rpm: +rpm.value || 0 };
+    if (secret.value) body.secret = secret.value;
+    if (existing) await api("/mcp/servers/" + m.id, { method: "PATCH", body }); else await api("/mcp/servers", { method: "POST", body: { ...body, name: name.value.trim() } });
+    closeModal(); toast(existing ? "Server updated" : "Server added"); render();
+  } }, el("div", { class: "row2" }, el("label", {}, "Name (URL slug)", name), el("label", {}, "Transport", tr)), el("label", {}, "Upstream URL", url),
+    el("div", { class: "row2" }, el("label", {}, "Credential header", hdr), el("label", {}, "Default calls / min per agent+tool", rpm)), el("label", {}, "Upstream secret", secret),
+    el("div", { class: "hint" }, "The secret is encrypted with the master key and injected server-side. Agents never see it and the API never returns it."),
+    el("div", { class: "acts2" }, existing && m.has_secret ? el("button", { class: "btn k", type: "button", style: { marginRight: "auto" }, onclick: async () => { await api("/mcp/servers/" + m.id, { method: "PATCH", body: { clear_secret: true } }); closeModal(); render(); } }, "Clear secret") : null,
+      el("button", { class: "btn", type: "button", onclick: closeModal }, "Cancel"), el("button", { class: "btn gr", type: "submit" }, existing ? "Save" : "Add server"))));
+}
+function mcpPolicyModal(servers, serverId) {
+  const agents = [...new Set(S.keys.filter((k) => k.agent && !k.revoked).map((k) => k.agent))];
+  const srv = el("select", { class: "inp" }, servers.map((x) => el("option", { value: x.id, selected: x.id === serverId }, x.name)));
+  const agent = el("input", { class: "inp m", placeholder: "every agent", list: "og-agents" });
+  const tool = el("input", { class: "inp m", required: true, placeholder: "search · delete_* · *" });
+  const action = el("select", { class: "inp" }, el("option", { value: "allow" }, "Allow"), el("option", { value: "deny" }, "Deny"));
+  const rpm = el("input", { class: "inp", type: "number", min: 0, placeholder: "server default" });
+  modal("New tool rule", el("form", { class: "form", onsubmit: async (e) => {
+    e.preventDefault(); await api("/mcp/policies", { method: "POST", body: { server_id: srv.value, agent: agent.value.trim(), tool: tool.value.trim(), action: action.value, rpm: +rpm.value || 0 } });
+    closeModal(); toast("Rule added"); render();
+  } }, el("datalist", { id: "og-agents" }, agents.map((a) => el("option", { value: a }))),
+    el("div", { class: "row2" }, el("label", {}, "Server", srv), el("label", {}, "Agent", agent)), el("div", { class: "row2" }, el("label", {}, "Tool", tool), el("label", {}, "Action", action)),
+    el("label", {}, "Calls / min (allow rules)", rpm),
+    el("div", { class: "hint" }, "Most specific rule wins: a rule for one agent beats an all-agents rule, an exact tool beats a wildcard, deny beats allow at a tie. Denied tools are also hidden from tools/list."),
+    el("div", { class: "acts2" }, el("button", { class: "btn", type: "button", onclick: closeModal }, "Cancel"), el("button", { class: "btn gr", type: "submit" }, "Add rule"))));
+}
+function mcpCredModal(server) {
+  const agent = el("input", { class: "inp m", required: true, placeholder: "agent name (or key id)" }), hdr = el("input", { class: "inp m", value: server.auth_header || "Authorization" });
+  const secret = el("input", { class: "inp m", type: "password", required: true, autocomplete: "off" });
+  modal("Agent credential · " + server.name, el("form", { class: "form", onsubmit: async (e) => {
+    e.preventDefault(); await api(`/mcp/servers/${server.id}/credentials`, { method: "PUT", body: { agent: agent.value.trim(), header: hdr.value.trim(), secret: secret.value } }); closeModal(); toast("Credential stored"); render();
+  } }, el("div", { class: "row2" }, el("label", {}, "Agent", agent), el("label", {}, "Header", hdr)), el("label", {}, "Secret", secret),
+    el("div", { class: "hint" }, "Overrides the server secret for this agent only (e.g. a per-agent GitHub token). Write-only."),
+    el("div", { class: "acts2" }, el("button", { class: "btn", type: "button", onclick: closeModal }, "Cancel"), el("button", { class: "btn gr", type: "submit" }, "Save credential"))));
+}
+PAGES.mcp = async (root, actions, crumb, r) => {
+  const tab = r.q.get("tab") || "servers", srvF = r.q.get("server") || "";
+  const [sv, pol, calls] = await Promise.all([api("/mcp/servers"), api("/mcp/policies"), api("/mcp/calls?limit=50" + (r.q.get("errors") ? "&errors=1" : "") + (srvF ? "&server_id=" + srvF : ""))]);
+  const servers = sv.data, byId = Object.fromEntries(servers.map((x) => [x.id, x]));
+  if (can("admin")) actions.push(tab === "policies" && servers.length ? el("button", { class: "btn gr", onclick: () => mcpPolicyModal(servers, srvF) }, "+ Tool rule") : el("button", { class: "btn gr", onclick: () => mcpServerModal() }, "+ Add server"));
+  const errs = calls.data.filter((c) => c.error_code).length;
+  const lat = calls.data.filter((c) => !c.error_code).map((c) => c.latency_ms).sort((a, b) => a - b);
+  const head = kpis([["MCP servers", num(servers.length), `${servers.filter((x) => x.enabled).length} enabled`], ["Tool rules", num(pol.data.length), pol.default_deny ? "default: deny" : "default: allow"],
+    ["Tool calls", num(calls.total), "logged with redacted args"], ["Blocked / failed", num(errs), lat.length ? "p50 " + ms(lat[Math.floor(lat.length / 2)]) + " on success" : "last 50 calls"]]);
+  const tabs = seg([["servers", "Servers"], ["policies", "Tool policies"], ["calls", "Call log"]], tab, (v) => setQuery({ tab: v === "servers" ? "" : v }));
+  let body;
+  if (tab === "servers") {
+    const rows = servers.map((x) => el("tr", {},
+      el("td", {}, el("span", { style: { display: "flex", alignItems: "center", gap: "10px" } }, monoFor(x.name), el("span", {}, el("div", {}, x.name), el("div", { class: "m mut", style: { fontSize: "11px" } }, x.url)))),
+      el("td", { class: "m t2" }, x.gateway_path), el("td", {}, st("mu", x.transport === "sse" ? "HTTP+SSE" : "Streamable HTTP")),
+      el("td", {}, x.has_secret ? st("ok", "Secret " + x.secret_hint) : st("mu", "No secret")), el("td", { class: "r m" }, x.default_rpm ? x.default_rpm + "/min" : "—"),
+      el("td", {}, can("admin") ? el("button", { class: "tog" + (x.enabled ? " on" : ""), title: x.enabled ? "Disable" : "Enable", onclick: async () => { await api("/mcp/servers/" + x.id, { method: "PATCH", body: { enabled: !x.enabled } }); render(); } }) : el("span", { class: "tog" + (x.enabled ? " on" : "") })),
+      el("td", { class: "r" }, can("admin") ? el("span", { style: { display: "inline-flex", gap: "6px" } }, el("button", { class: "btn sm", onclick: () => mcpCredModal(x) }, "Agent secret"), el("button", { class: "btn sm", onclick: () => mcpServerModal(x) }, "Edit"),
+        el("button", { class: "btn sm", onclick: async () => { if (confirm(`Delete ${x.name} and its rules?`)) { await api("/mcp/servers/" + x.id, { method: "DELETE" }); render(); } } }, "Delete")) : null)));
+    const origin = location.origin;
+    body = el("div", { class: "g split380" },
+      card("MCP servers", table(["Server", "Gateway URL", "Transport", "Credential", ">Default limit", "On", ""], rows, { empty: empty("No MCP servers yet", "Add an upstream MCP server; agents then connect to /mcp/<name> on this gateway with their OpenGate key.", can("admin") ? el("button", { class: "btn gr", onclick: () => mcpServerModal() }, "+ Add server") : null) })),
+      el("div", { class: "g" },
+        card("Connect an agent", el("div", { class: "pad t2", style: { fontSize: "12.5px", lineHeight: 1.6 } }, "Point your MCP client at the gateway and authenticate with the agent's virtual key:",
+          el("pre", { class: "code" }, `{\n  "mcpServers": {\n    "${servers[0] ? servers[0].name : "github"}": {\n      "url": "${origin}/mcp/${servers[0] ? servers[0].name : "github"}",\n      "headers": { "Authorization": "Bearer og-…" }\n    }\n  }\n}`),
+          "Kill switch, budgets and request rate limits of the key apply to tool calls; upstream secrets stay on the server.")),
+        card("What OpenGate enforces", el("div", {}, kvr([["Kill switch", st("ok", "key + project")], ["Budgets", st("ok", "over-budget agents can't call tools")], ["Allow / deny", st("ok", "per agent, wildcards")], ["Rate limit", st("ok", "per agent + tool")], ["Argument logging", st("vi", "PII redacted")], ["Approval workflows", SOON()]])))));
+  } else if (tab === "policies") {
+    const rows = pol.data.map((p) => el("tr", {}, el("td", {}, (byId[p.server_id] || {}).name || p.server_id), el("td", {}, p.agent || el("span", { class: "mut" }, "every agent")), el("td", { class: "m" }, p.tool),
+      el("td", {}, st(p.action === "allow" ? "ok" : "bk", p.action === "allow" ? "Allow" : "Deny")), el("td", { class: "r m" }, p.rpm ? p.rpm + "/min" : "—"), el("td", { class: "mut" }, ago(p.created_at)),
+      el("td", { class: "r" }, can("admin") ? el("button", { class: "btn sm", onclick: async () => { await api("/mcp/policies/" + p.id, { method: "DELETE" }); render(); } }, "Remove") : null)));
+    const agentI = el("input", { class: "inp m", placeholder: "agent", style: { flex: 1 } }), toolI = el("input", { class: "inp m", placeholder: "tool", style: { flex: 1 } });
+    const srvI = el("select", { class: "inp" }, servers.map((x) => el("option", { value: x.id }, x.name)));
+    const out = el("span", { class: "mut" }, "");
+    const tester = el("form", { style: { display: "flex", gap: "8px", padding: "12px 16px", alignItems: "center" }, onsubmit: async (e) => {
+      e.preventDefault(); const d = await api("/mcp/check", { method: "POST", body: { server_id: srvI.value, agent: agentI.value.trim(), tool: toolI.value.trim() } });
+      out.replaceChildren(st(d.allowed ? "ok" : "bk", d.allowed ? "Allowed" : "Denied"), d.rpm ? " " + d.rpm + "/min" : "", d.rule ? el("span", { class: "m mut", style: { fontSize: "11px", marginLeft: "6px" } }, "rule " + d.rule.tool + (d.rule.agent ? " @ " + d.rule.agent : "")) : el("span", { class: "mut", style: { marginLeft: "6px" } }, "no rule · default"));
+    } }, srvI, agentI, toolI, el("button", { class: "btn sm", type: "submit", disabled: !servers.length }, "Test"), out);
+    body = el("div", { class: "g" }, card("Tool policy", table(["Server", "Agent", "Tool", "Action", ">Limit", "Added", ""], rows, { empty: empty("No tool rules", (pol.default_deny ? "Default deny is on: every tool is blocked" : "Every tool is allowed") + " until you add rules. Typical setup: deny write tools (delete_*, push_*) for all agents, then allow them for one trusted agent.") }),
+      { sub: pol.default_deny ? "default deny" : "default allow" }), card("Policy tester", tester, { sub: "dry run, no call is made" }));
+  } else {
+    const rows = calls.data.map((c) => el("tr", {}, el("td", { class: "m mut" }, hhmmss(c.ts)), el("td", {}, c.agent), el("td", {}, c.server_name), el("td", { class: "m" }, c.tool || c.method),
+      el("td", { class: "m mut", style: { maxWidth: "320px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "11px" }, title: c.args }, c.args || "—", c.redacted ? [" ", st("vi", "redacted")] : null),
+      el("td", { class: "r m" }, ms(c.latency_ms)), el("td", {}, c.error_code ? st(c.status >= 400 ? "bk" : "rt", ERR_LABEL[c.error_code] || c.error_code.replace(/_/g, " "), c.error_message) : st("ok", c.status))));
+    const srvSel = el("select", { class: "inp", onchange: (e) => setQuery({ server: e.target.value }) }, el("option", { value: "" }, "All servers"), servers.map((x) => el("option", { value: x.id, selected: x.id === srvF }, x.name)));
+    body = card("Tool-call log", table(["Time", "Agent", "Server", "Tool", "Arguments (redacted)", ">Latency", "Status"], rows, { cls: "tight", empty: empty("No tool calls yet", "Calls appear here as soon as an agent uses a tool through /mcp/<server>.") }),
+      { sub: `${num(calls.total)} calls · newest first`, right: el("span", { style: { display: "flex", gap: "6px" } }, srvSel, el("button", { class: "btn sm" + (r.q.get("errors") ? " gr" : ""), onclick: () => setQuery({ errors: r.q.get("errors") ? "" : "1" }) }, "Errors only"),
+        el("button", { class: "btn sm", disabled: !calls.data.length, onclick: () => download("opengate-mcp-calls.csv", toCSV([["id", "ts", "agent", "server", "tool", "status", "error_code", "latency_ms", "args"], ...calls.data.map((c) => [c.id, c.ts, c.agent, c.server_name, c.tool, c.status, c.error_code, c.latency_ms, c.args])])) }, "CSV")) });
+  }
+  root.append(el("div", { class: "g" }, head, el("div", {}, tabs), body));
+};
+ERR_LABEL.tool_not_allowed = "Tool denied"; ERR_LABEL.tool_error = "Tool error";
+
+// ---------- audit log ----------
+PAGES.audit = async (root, actions, crumb, r) => {
+  if (!teamOn("audit_log")) { root.append(card("Audit log", teamLocked("The audit log is part of the Team plan", "Every admin action (budgets, keys, kill switch, roles, policies, MCP) is recorded append-only. Upgrade to search and export it."))); return; }
+  const q = r.q, page = +(q.get("p") || 0), per = 50;
+  const params = new URLSearchParams({ limit: per, offset: page * per });
+  for (const k of ["actor", "action", "since", "until"]) if (q.get(k)) params.set(k, q.get(k));
+  const a = await api("/audit?" + params);
+  const f = { actor: el("input", { class: "inp", value: q.get("actor") || "", placeholder: "actor email" }),
+    action: el("select", { class: "inp" }, [["", "All actions"], ["key.", "Keys"], ["limit.", "Budgets"], ["project.", "Projects & kill switch"], ["member.", "Members & roles"], ["invite", "Invites"], ["mcp.", "MCP"], ["markup.", "Markups"], ["guardrails.", "Guardrails"], ["routing_rule.", "Routing"], ["billing.", "Billing"], ["auth.", "Sign-ins"]].map(([v, t]) => el("option", { value: v, selected: v === (q.get("action") || "") }, t))),
+    since: el("input", { class: "inp", type: "date", value: q.get("since") || "" }), until: el("input", { class: "inp", type: "date", value: q.get("until") || "" }) };
+  const apply = (e) => { e.preventDefault(); setQuery({ actor: f.actor.value.trim(), action: f.action.value, since: f.since.value, until: f.until.value, p: "" }); };
+  const filters = el("form", { class: "card", style: { display: "flex", gap: "8px", padding: "10px 12px", alignItems: "center", flexWrap: "wrap" }, onsubmit: apply },
+    f.actor, f.action, el("span", { class: "mut" }, "from"), f.since, el("span", { class: "mut" }, "to"), f.until, el("button", { class: "btn sm gr", type: "submit" }, "Apply"),
+    el("button", { class: "btn sm", type: "button", onclick: () => setQuery({ actor: "", action: "", since: "", until: "", p: "" }) }, "Clear"));
+  const qs = [...params].filter(([k]) => k !== "limit" && k !== "offset").map(([k, v]) => k + "=" + encodeURIComponent(v)).join("&");
+  actions.push(el("button", { class: "btn", onclick: () => exportAuditCSV(qs) }, "Export CSV"));
+  const diff = (x) => {
+    if (!x.before && !x.after) return x.detail ? el("span", { class: "m mut", style: { fontSize: "11px" } }, JSON.stringify(x.detail).slice(0, 120)) : el("span", { class: "mut" }, "—");
+    const b = x.before || {}, af = x.after || {};
+    const keys = [...new Set([...Object.keys(b), ...Object.keys(af)])].filter((k) => JSON.stringify(b[k]) !== JSON.stringify(af[k])).slice(0, 4);
+    if (!keys.length) return el("span", { class: "mut" }, "no change");
+    return el("span", { style: { display: "flex", flexDirection: "column", gap: "2px" } }, keys.map((k) => el("span", { class: "m", style: { fontSize: "11px" } }, el("span", { class: "mut" }, k + " "),
+      el("span", { class: "red" }, b[k] === undefined ? "∅" : JSON.stringify(b[k])), " → ", el("span", { class: "grn" }, af[k] === undefined ? (x.after ? "∅" : "deleted") : JSON.stringify(af[k])))));
+  };
+  const rows = a.data.map((x) => el("tr", {}, el("td", { class: "m mut", title: x.ts }, new Date(x.ts).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })),
+    el("td", {}, x.actor_email || (x.actor_type === "token" ? "admin token" : x.actor_type)), el("td", { class: "m" }, x.action), el("td", { class: "m t2", style: { fontSize: "11px" } }, x.target ? (keyById(x.target) ? keyById(x.target).name : x.target) : "—"),
+    el("td", {}, diff(x)), el("td", {}, st(x.status < 400 ? "ok" : "bk", x.status)), el("td", { class: "m mut", style: { fontSize: "11px" } }, x.ip || "—")));
+  const pager = el("span", { class: "m mut", style: { fontSize: "11px", display: "flex", gap: "8px", alignItems: "center" } }, a.total ? `${page * per + 1}–${Math.min(a.total, page * per + a.data.length)} of ${num(a.total)}` : "0 events",
+    page > 0 ? el("button", { class: "btn sm", onclick: () => setQuery({ p: page - 1 || "" }) }, "←") : null, (page + 1) * per < a.total ? el("button", { class: "btn sm", onclick: () => setQuery({ p: page + 1 }) }, "→") : null);
+  root.append(el("div", { class: "g" }, filters,
+    card("Admin actions", table(["Time", "Actor", "Action", "Target", "Before → after", "Status", "IP"], rows, { cls: "tight", empty: empty("No audit events match", "Admin actions are recorded here as they happen.") }), { sub: "append-only · the database rejects edits and deletes", right: pager })));
+};
+
 // ---------- boot ----------
 async function loadMe() {
   const r = await api("/auth/me", { quiet: true });
@@ -1093,6 +1256,7 @@ async function loadMe() {
   if (r.kind === "token") me.org_id = sessionStorage.getItem(ORG_KEY) || "org_default";
   if (r.kind === "user") { const o = r.orgs.find((o) => o.id === r.org_id); if (o) me.role = o.role; } else me.role = "owner";
   S.cfg = await soft("/settings", {});
+  me.plan = await soft("/plan", null);
 }
 async function boot() {
   S.authCfg = await api("/auth/config", { quiet: true }).catch(() => ({}));

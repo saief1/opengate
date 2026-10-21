@@ -23,6 +23,9 @@ Send `SIGHUP` to reload the price table.
 | `STRIPE_API_KEY` | With `billing.stripe.enabled` (your customers' metering) **or** `cloud.enabled` (subscriptions); never both. |
 | `STRIPE_WEBHOOK_SECRET` | Cloud mode: `whsec_...` signing secret of the webhook endpoint. |
 | `OPENGATE_PUBLIC_URL` | Cloud mode: external `https://` base URL (Stripe redirects back here). |
+| `OPENGATE_PLAN` | Empty (default, everything unlocked) / `team` / `enterprise`, or `free` to gate Team features. |
+| `OPENGATE_CORS_ORIGINS` | Comma-separated origins allowed to call `/v1` and `/mcp` from browsers (`*` = any). Empty = no CORS. |
+| `OPENGATE_STRIPE_ALLOW_LIVE` | `true` to accept live-mode Stripe keys (refused by default). |
 | `OPENGATE_NEW_PASSWORD` | Read by `opengate create-user` instead of stdin. |
 
 ## Top level
@@ -144,6 +147,17 @@ Limits of `0` mean unlimited. Enabling cloud mode turns on `auth.allow_signup`, 
 `public_url`. It **refuses to start** with `share_env_provider_keys` or `billing.stripe.enabled`, because tenants
 must never spend the operator's provider keys or be metered into the operator's Stripe account. It needs
 `STRIPE_API_KEY` and `STRIPE_WEBHOOK_SECRET`.
+
+## `mcp`
+
+MCP tool gateway; see [mcp.md](mcp.md). Keys: `disabled`, `timeout` (60s), `stream_timeout` (10m),
+`args_log_max_bytes` (4096), `default_deny` (false).
+
+## `plan`, `cors_origins`
+
+`plan: free` gates the Team features (audit log viewer/export, member and read-only roles, markup and Stripe sync
+writes) with HTTP 402. Empty (the default) leaves a self-hosted install fully unlocked. In cloud mode the org's
+subscription decides (any non-free plan is unlocked). `cors_origins` lists browser origins for `/v1` and `/mcp`.
 
 ## `cache`
 

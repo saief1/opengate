@@ -3,7 +3,37 @@
 All notable changes to OpenGate. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project uses [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] (v2-dev)
+## [Unreleased] (features-v3)
+
+### MCP tool gateway
+- `/mcp/{server}` proxies MCP (streamable HTTP and legacy HTTP+SSE) with the agent's virtual key: kill switch,
+  budgets and key rate limits apply to `tools/call`; per-agent allow/deny tool rules with wildcards (denied tools are
+  hidden from `tools/list`); per agent+tool rate limits; upstream secrets (server-wide or per agent) encrypted
+  server-side and never returned; every tool call logged with redacted arguments, status and latency.
+- Admin API `/admin/api/mcp/*` (servers, credentials, policies, dry-run check, call log); dashboard *MCP tools*
+  (servers, tool policy editor + tester, call log). See docs/mcp.md.
+
+### Audit log, roles, plans
+- Audit log is append-only (SQLite triggers / PostgreSQL trigger reject UPDATE and DELETE) and records `before` /
+  `after` state for key kill/revoke/policy/customer, project kill, limits, member roles, markups and MCP changes.
+- `GET /admin/api/audit` filters (actor, action prefix, target, since, until); `GET /admin/api/audit/export.csv`;
+  dashboard *Audit log* page with filters, before→after diff and CSV export.
+- Roles owner / admin / member / read-only (`viewer`; `read-only` accepted as an alias), enforced on every admin
+  route and reflected in the dashboard.
+- `plan` / `OPENGATE_PLAN`: self-hosted is unlocked by default; `free` gates the Team features (audit viewer and
+  export, member/read-only roles, customer billing writes) with HTTP 402 `plan_required`. Cloud orgs on the free
+  plan are gated; the operator token is not. `GET /admin/api/plan`.
+
+### Customer billing
+- Markup rules take `per_mtok_usd` (flat fee per million tokens) on top of the percentage; dashboard rule editor.
+
+### Production readiness
+- `.env.example`, `DEPLOY.md` (VPS, Fly.io, Render, why not Vercel, backups), GitHub Actions CI (gofmt, vet, tests on
+  SQLite and PostgreSQL, build, docker build + smoke test).
+- Optional CORS for `/v1` and `/mcp` (`cors_origins` / `OPENGATE_CORS_ORIGINS`); the admin API never sends CORS headers.
+- Live-mode Stripe keys are refused unless `OPENGATE_STRIPE_ALLOW_LIVE=true`.
+
+## [2.0.0-dev] (v2-dev)
 
 ### Dashboard design v2
 

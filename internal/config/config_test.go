@@ -158,3 +158,35 @@ func TestCloudConfigValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestLiveStripeKeyRefusedByDefault(t *testing.T) {
+	c := Default()
+	c.Billing.Stripe.Enabled = true
+	c.StripeAPIKey = "sk_live_" + "x"
+	if err := c.ValidateStripe(); err == nil {
+		t.Fatal("live key accepted without OPENGATE_STRIPE_ALLOW_LIVE")
+	}
+	c.StripeAllowLive = true
+	if err := c.ValidateStripe(); err != nil {
+		t.Fatal(err)
+	}
+	c.StripeAllowLive, c.StripeAPIKey = false, "sk_test_"+"x"
+	if err := c.ValidateStripe(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPlanValidation(t *testing.T) {
+	for _, p := range []string{"", "free", "team", "Enterprise"} {
+		c := Default()
+		c.Plan = p
+		if err := c.Normalize(); err != nil {
+			t.Errorf("plan %q: %v", p, err)
+		}
+	}
+	c := Default()
+	c.Plan = "gold"
+	if err := c.Normalize(); err == nil {
+		t.Error("unknown plan accepted")
+	}
+}

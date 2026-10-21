@@ -110,6 +110,8 @@ func (m *Mock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	m.remember(prov, body)
 	switch {
+	case strings.HasPrefix(path, "/mcp"):
+		mockMCP(w, r, body)
 	case strings.HasSuffix(path, "/chat/completions"):
 		m.openai(w, r, body)
 	case strings.HasSuffix(path, "/embeddings"):
@@ -575,4 +577,48 @@ func (m *Mock) responses(w http.ResponseWriter, r *http.Request, body []byte) {
 	}
 	ev("response.output_text.done", map[string]any{"item_id": "msg_" + id, "output_index": 0, "content_index": 0, "text": text})
 	ev("response.completed", map[string]any{"response": resp("completed", true)})
+}
+
+// mockMCP is a minimal streamable-HTTP MCP server for demos: a few fake
+// GitHub-style tools that echo their arguments.
+func mockMCP(w http.ResponseWriter, r *http.Request, body []byte) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var msg struct {
+		ID     json.RawMessage `json:"id"`
+		Method string          `json:"method"`
+		Params struct {
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
+		} `json:"params"`
+	}
+	_ = json.Unmarshal(body, &msg)
+	if len(msg.ID) == 0 { // notification
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	var result any
+	switch msg.Method {
+	case "initialize":
+		result = map[string]any{"protocolVersion": "2025-06-18", "serverInfo": map[string]any{"name": "mock-mcp", "version": "1"}, "capabilities": map[string]any{"tools": map[string]any{}}}
+	case "tools/list":
+		tools := []any{}
+		for _, n := range []string{"search_issues", "read_file", "create_issue", "delete_repo", "push_commit"} {
+			tools = append(tools, map[string]any{"name": n, "description": "mock " + n, "inputSchema": map[string]any{"type": "object"}})
+		}
+		result = map[string]any{"tools": tools}
+	case "tools/call":
+		if msg.Params.Name == "flaky_tool" {
+			result = map[string]any{"isError": true, "content": []any{map[string]any{"type": "text", "text": "upstream tool failed"}}}
+		} else {
+			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "mock result for " + msg.Params.Name}}}
+		}
+	default:
+		result = map[string]any{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Mcp-Session-Id", "mock-session")
+	_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": msg.ID, "result": result})
 }

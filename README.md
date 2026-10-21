@@ -171,6 +171,15 @@ curl -X PUT localhost:8080/admin/api/limits -H "Authorization: Bearer $OPENGATE_
   -d '{"scope":"agent","scope_id":"prj_…/planner","daily_usd":20}'
 ```
 
+## MCP tool gateway
+
+Agents can reach their MCP tools through OpenGate too: `https://your-gateway/mcp/<server>` with the agent's
+`og-…` key. OpenGate injects the upstream secret (never shown to the agent), enforces per-agent allow/deny
+tool rules and per-tool rate limits, applies the kill switch and budgets, and logs every tool call with
+redacted arguments. Dashboard: *MCP tools*. Details: [docs/mcp.md](docs/mcp.md).
+
+Deploying: see [DEPLOY.md](DEPLOY.md) (VPS, Fly.io, Render; why not Vercel; backups).
+
 ## Configuration reference
 
 YAML file (`-config` or `OPENGATE_CONFIG`). Every field is optional, unknown fields are rejected, and `${VAR}` is expanded.
@@ -294,7 +303,7 @@ RBAC and orgs, embeddings and Responses, atomic budget reservations, model allow
 * **OpenGate Cloud** (in progress on `v2-dev`): hosted multi-tenant mode with self-serve sign-up, plans and quotas,
   Stripe Checkout, Customer Portal and webhooks, plus deploy templates. See [docs/cloud.md](docs/cloud.md); pricing is a draft.
 * **DB-backed budget reservations** for exact limits across many replicas.
-* **Agent spend controls:** approval workflows for over-budget requests, a tamper-evident audit log, and spend reconciliation against provider invoices.
+* **Agent spend controls:** approval workflows for over-budget requests and spend reconciliation against provider invoices (the append-only audit log shipped in v3).
 * **Distillation:** capture opted-in traffic as datasets to fine-tune smaller, cheaper models that replace expensive ones on your own workloads.
 * **Learned routing:** quality tiers informed by your own evals and feedback, plus budget-aware downgrades instead of a hard stop.
 * **SSO (OIDC/SAML), 2FA, master-key rotation, and OpenTelemetry traces.**
