@@ -415,6 +415,73 @@ var migrations = []migration{
   expires_at BIGINT NOT NULL
 )`,
 	}},
+	{8, "v3: MCP gateway, append-only audit with before/after, per-token markup", []string{
+		`CREATE TABLE IF NOT EXISTS mcp_servers (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  url TEXT NOT NULL,
+  transport TEXT NOT NULL DEFAULT 'http',
+  auth_header TEXT NOT NULL DEFAULT 'Authorization',
+  secret_ct TEXT NOT NULL DEFAULT '',
+  secret_hint TEXT NOT NULL DEFAULT '',
+  default_rpm INTEGER NOT NULL DEFAULT 0,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL
+)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_name ON mcp_servers(org_id, name)`,
+		`CREATE TABLE IF NOT EXISTS mcp_credentials (
+  id TEXT PRIMARY KEY,
+  server_id TEXT NOT NULL,
+  agent TEXT NOT NULL,
+  header TEXT NOT NULL DEFAULT 'Authorization',
+  secret_ct TEXT NOT NULL,
+  secret_hint TEXT NOT NULL DEFAULT '',
+  created_at BIGINT NOT NULL
+)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_cred ON mcp_credentials(server_id, agent)`,
+		`CREATE TABLE IF NOT EXISTS mcp_policies (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL,
+  server_id TEXT NOT NULL,
+  agent TEXT NOT NULL DEFAULT '',
+  tool TEXT NOT NULL,
+  action TEXT NOT NULL,
+  rpm INTEGER NOT NULL DEFAULT 0,
+  created_at BIGINT NOT NULL
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_mcp_policies_server ON mcp_policies(server_id)`,
+		`CREATE TABLE IF NOT EXISTS mcp_calls (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL,
+  ts BIGINT NOT NULL,
+  project_id TEXT NOT NULL DEFAULT '',
+  key_id TEXT NOT NULL DEFAULT '',
+  agent TEXT NOT NULL DEFAULT '',
+  server_id TEXT NOT NULL DEFAULT '',
+  server_name TEXT NOT NULL DEFAULT '',
+  method TEXT NOT NULL DEFAULT '',
+  tool TEXT NOT NULL DEFAULT '',
+  args TEXT NOT NULL DEFAULT '',
+  redacted INTEGER NOT NULL DEFAULT 0,
+  status INTEGER NOT NULL DEFAULT 0,
+  error_code TEXT NOT NULL DEFAULT '',
+  error_message TEXT NOT NULL DEFAULT '',
+  latency_ms BIGINT NOT NULL DEFAULT 0
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_mcp_calls_org_ts ON mcp_calls(org_id, ts)`,
+		`ALTER TABLE audit_log ADD COLUMN before_json TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE audit_log ADD COLUMN after_json TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE markup_rules ADD COLUMN per_mtok_usd DOUBLE PRECISION NOT NULL DEFAULT 0`,
+		// The audit log is append-only: the database itself refuses UPDATE
+		// and DELETE, so neither a bug nor a compromised admin API can
+		// rewrite history.
+		`sqlite:CREATE TRIGGER IF NOT EXISTS audit_log_no_update BEFORE UPDATE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END`,
+		`sqlite:CREATE TRIGGER IF NOT EXISTS audit_log_no_delete BEFORE DELETE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END`,
+		`postgres:CREATE OR REPLACE FUNCTION opengate_audit_immutable() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'audit_log is append-only'; END; $$ LANGUAGE plpgsql`,
+		`postgres:CREATE TRIGGER audit_log_immutable BEFORE UPDATE OR DELETE ON audit_log FOR EACH ROW EXECUTE FUNCTION opengate_audit_immutable()`,
+	}},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

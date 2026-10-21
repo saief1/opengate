@@ -202,10 +202,20 @@ func TestGuardrails(t *testing.T) {
 	rs := e.chat(key, map[string]any{"model": "openai/gpt-leaky", "messages": msgs("hello"), "stream": true})
 	readSSE(t, rs)
 	// The stream's log row is written right after the last byte; poll.
-	l = e.logs("limit=1")[0]
+	// Rows are ordered by start time (ms); the stream and the previous
+	// request can share a millisecond, so look at the newest few.
+	streamRow := func() map[string]any {
+		for _, r := range e.logs("limit=3") {
+			if r["stream"] == true {
+				return r
+			}
+		}
+		return map[string]any{}
+	}
+	l = streamRow()
 	for i := 0; i < 50 && l["stream"] != true; i++ {
 		time.Sleep(10 * time.Millisecond)
-		l = e.logs("limit=1")[0]
+		l = streamRow()
 	}
 	if l["guard"] != "credit_card,email" || l["guard_action"] != "logged" {
 		t.Fatalf("stream finding: %v", l)

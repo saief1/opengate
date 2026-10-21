@@ -41,13 +41,23 @@ schemas = {
                        "injection": {"type": "string", "enum": ["off", "log", "block"]}}),
     "Customer": obj({"project_id": s, "customer_id": s, "name": s, "stripe_customer_id": s, "requests": i, "prompt_tokens": i,
                      "completion_tokens": i, "cost_usd": n, "billed_usd": n}),
-    "Markup": obj({"id": s, "project_id": s, "customer_id": s, "model": s, "markup_pct": n, "fixed_usd_per_1k_requests": n}),
+    "Markup": obj({"id": s, "project_id": s, "customer_id": s, "model": s, "markup_pct": n, "per_mtok_usd": {"type": "number", "description": "Flat USD fee per million tokens, added to the percentage markup"}}),
     "Org": obj({"id": s, "name": s, "created_at": {"type": "string", "format": "date-time"}, "role": s}),
-    "Member": obj({"id": s, "email": s, "name": s, "role": {"type": "string", "enum": ["owner", "admin", "member", "viewer"]},
+    "Member": obj({"id": s, "email": s, "name": s, "role": {"type": "string", "enum": ["owner", "admin", "member", "viewer"], "description": "viewer = read-only (\"read-only\" is accepted as an alias)"},
                    "joined_at": {"type": "string", "format": "date-time"}}),
     "Invite": obj({"id": s, "email": s, "role": s, "expires_at": {"type": "string", "format": "date-time"}}),
     "AuditEntry": obj({"id": s, "ts": {"type": "string", "format": "date-time"}, "actor": s, "action": s, "target": s, "ip": s,
-                       "detail": {"type": "object"}}),
+                       "actor_type": s, "actor_email": s, "status": i, "detail": {"type": "object"},
+                       "before": {"type": "object", "description": "State before the change"}, "after": {"type": "object", "description": "State after the change"}}),
+    "MCPServer": obj({"id": s, "name": s, "url": s, "transport": {"type": "string", "enum": ["http", "sse"]}, "auth_header": s, "has_secret": b,
+                      "secret_hint": s, "default_rpm": i, "enabled": b, "gateway_path": s}),
+    "MCPServerInput": obj({"name": s, "url": s, "transport": s, "auth_header": s, "secret": {"type": "string", "description": "Write-only upstream secret (stored encrypted, never returned)"},
+                           "default_rpm": i, "enabled": b, "clear_secret": b}),
+    "MCPCredential": obj({"id": s, "server_id": s, "agent": s, "header": s, "secret_hint": s}),
+    "MCPPolicy": obj({"id": s, "server_id": s, "agent": {"type": "string", "description": "empty = every agent"}, "tool": {"type": "string", "description": "exact name or prefix*"},
+                      "action": {"type": "string", "enum": ["allow", "deny"]}, "rpm": i}, ["server_id", "tool", "action"]),
+    "MCPCall": obj({"id": s, "ts": {"type": "string", "format": "date-time"}, "agent": s, "key_id": s, "server_name": s, "method": s, "tool": s,
+                    "args": {"type": "string", "description": "Redacted, truncated JSON arguments"}, "redacted": b, "status": i, "error_code": s, "latency_ms": i}),
     "Me": obj({"kind": {"type": "string", "enum": ["token", "session"]}, "user": obj({"id": s, "email": s, "name": s}), "org_id": s,
                "role": s, "orgs": arr(S("Org"))}),
 }
@@ -73,7 +83,21 @@ r("GET", "/admin/api/series", "Monitor", "Rolling-window summary, p50/p95 latenc
 r("GET", "/admin/api/alerts", "Budgets", "Budget alert webhook status (host only) and recent threshold alerts")
 r("GET", "/admin/api/logs", "Monitor", "Request logs (filters: key_id, project_id, agent, model, customer_id, errors=1, guard=1, limit, offset)", resp=listOf(S("RequestLog")))
 r("GET", "/admin/api/logs/{id}", "Monitor", "One request log incl. bodies when logged", resp=S("RequestLog"))
-r("GET", "/admin/api/audit", "Monitor", "Audit log of admin actions", resp=listOf(S("AuditEntry")))
+r("GET", "/admin/api/audit", "Monitor", "Append-only audit log of admin actions (filters: actor, action prefix, target, since, until, limit, offset). Team plan.", resp=listOf(S("AuditEntry")))
+r("GET", "/admin/api/audit/export.csv", "Monitor", "Audit log as CSV (same filters, up to 5000 rows). Team plan.")
+r("GET", "/admin/api/plan", "Auth", "Effective plan, Team feature flags, caller role and coming-soon features")
+r("GET", "/admin/api/mcp/servers", "MCP", "MCP servers (secrets never returned)", resp=listOf(S("MCPServer")))
+r("POST", "/admin/api/mcp/servers", "MCP", "Register an MCP server", None, S("MCPServerInput"), S("MCPServer"), "201")
+r("PATCH", "/admin/api/mcp/servers/{id}", "MCP", "Update / rotate secret / enable-disable an MCP server", None, S("MCPServerInput"), S("MCPServer"))
+r("DELETE", "/admin/api/mcp/servers/{id}", "MCP", "Delete an MCP server with its policies and credentials", code="204")
+r("GET", "/admin/api/mcp/servers/{id}/credentials", "MCP", "Per-agent upstream credentials (hints only)", resp=listOf(S("MCPCredential")))
+r("PUT", "/admin/api/mcp/servers/{id}/credentials", "MCP", "Set an agent's upstream credential", None, obj({"agent": s, "header": s, "secret": s}, ["agent", "secret"]), S("MCPCredential"))
+r("DELETE", "/admin/api/mcp/servers/{id}/credentials/{cid}", "MCP", "Delete an agent credential", code="204")
+r("GET", "/admin/api/mcp/policies", "MCP", "Tool allow/deny and rate-limit rules (filter: server_id)", resp=listOf(S("MCPPolicy")))
+r("POST", "/admin/api/mcp/policies", "MCP", "Add a tool rule", None, S("MCPPolicy"), S("MCPPolicy"), "201")
+r("DELETE", "/admin/api/mcp/policies/{id}", "MCP", "Delete a tool rule", code="204")
+r("POST", "/admin/api/mcp/check", "MCP", "Dry run: would this agent be allowed to call this tool?", "viewer", obj({"server_id": s, "agent": s, "tool": s}), obj({"allowed": b, "rpm": i}))
+r("GET", "/admin/api/mcp/calls", "MCP", "MCP tool-call log (filters: server_id, agent, tool, errors=1)", resp=listOf(S("MCPCall")))
 # Projects & keys
 r("GET", "/admin/api/projects", "Projects", "List projects in the org", resp=listOf(S("Project")))
 r("POST", "/admin/api/projects", "Projects", "Create project", None, obj({"name": s, "log_bodies": b}, ["name"]), S("Project"), "201")

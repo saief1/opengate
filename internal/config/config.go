@@ -64,6 +64,17 @@ type Config struct {
 	// environment variables. Default false: env keys serve only the default
 	// org; other orgs must bring their own (stored encrypted).
 	ShareEnvProviderKeys bool `yaml:"share_env_provider_keys"`
+	// Plan gates the Team features (audit log viewer, roles, customer
+	// billing pass-through) on a self-hosted install: "" (default) or
+	// "team"/"enterprise" = unlocked; "free" = locked. In cloud mode each
+	// org's subscription decides instead. Env: OPENGATE_PLAN.
+	Plan string `yaml:"plan"`
+	// CORSOrigins lists browser origins allowed to call the gateway (/v1/*,
+	// /mcp/*) cross-origin. Empty (default) = no CORS headers at all. The
+	// admin API never sends CORS headers. Env: OPENGATE_CORS_ORIGINS (comma
+	// separated). "*" allows any origin (no credentials).
+	CORSOrigins []string  `yaml:"cors_origins"`
+	MCP         MCPConfig `yaml:"mcp"`
 
 	// Secrets are only ever read from the environment, never from YAML.
 	AdminToken   string `yaml:"-"`
@@ -73,6 +84,21 @@ type Config struct {
 	// StripeWebhookSecret (STRIPE_WEBHOOK_SECRET, "whsec_...") verifies
 	// Stripe webhook signatures in cloud mode.
 	StripeWebhookSecret string `yaml:"-"`
+}
+
+// MCPConfig configures the MCP (Model Context Protocol) tool gateway.
+type MCPConfig struct {
+	// Disabled turns off /mcp/{server} entirely.
+	Disabled bool `yaml:"disabled"`
+	// Timeout bounds one upstream MCP request (default 60s; SSE streams are
+	// bounded by StreamTimeout instead).
+	Timeout       time.Duration `yaml:"timeout"`
+	StreamTimeout time.Duration `yaml:"stream_timeout"` // default 10m
+	// ArgsLogMaxBytes caps logged (redacted) tool arguments (default 4096).
+	ArgsLogMaxBytes int `yaml:"args_log_max_bytes"`
+	// DefaultDeny makes tools without an explicit allow rule forbidden
+	// (default false: allowed unless denied).
+	DefaultDeny bool `yaml:"default_deny"`
 }
 
 // CloudConfig turns an install into a hosted, multi-tenant "OpenGate Cloud":
@@ -418,6 +444,15 @@ func (c *Config) applyEnv() {
 	set(&c.StripeAPIKey, "STRIPE_API_KEY")
 	set(&c.StripeWebhookSecret, "STRIPE_WEBHOOK_SECRET")
 	set(&c.Cloud.PublicURL, "OPENGATE_PUBLIC_URL")
+	set(&c.Plan, "OPENGATE_PLAN")
+	if v := os.Getenv("OPENGATE_CORS_ORIGINS"); v != "" {
+		c.CORSOrigins = nil
+		for _, o := range strings.Split(v, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				c.CORSOrigins = append(c.CORSOrigins, o)
+			}
+		}
+	}
 	if v := os.Getenv("OPENGATE_ALLOW_INSECURE_UPSTREAM"); v == "1" || strings.EqualFold(v, "true") {
 		c.AllowInsecureUpstream = true
 	}
@@ -441,6 +476,21 @@ func (c *Config) Normalize() error {
 	}
 	if c.MaxRequestBytes <= 0 {
 		c.MaxRequestBytes = 10 << 20
+	}
+	if c.MCP.Timeout <= 0 {
+		c.MCP.Timeout = 60 * time.Second
+	}
+	if c.MCP.StreamTimeout <= 0 {
+		c.MCP.StreamTimeout = 10 * time.Minute
+	}
+	if c.MCP.ArgsLogMaxBytes <= 0 {
+		c.MCP.ArgsLogMaxBytes = 4096
+	}
+	switch strings.ToLower(c.Plan) {
+	case "", "unlocked", "free", "team", "enterprise":
+		c.Plan = strings.ToLower(c.Plan)
+	default:
+		return fmt.Errorf("plan must be empty, free, team or enterprise (got %q)", c.Plan)
 	}
 	if c.BodyLogMaxBytes <= 0 {
 		c.BodyLogMaxBytes = 64 << 10

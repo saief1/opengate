@@ -182,7 +182,7 @@ func TestCloudSignupCheckoutLifecycle(t *testing.T) {
 		t.Fatalf("back on free: %d %s", st, code)
 	}
 	// Plan changes are in the org's audit log, attributed to Stripe.
-	audit := b.do("GET", "/admin/api/audit", nil, 200)["data"].([]any)
+	audit := e.adminOrg(b.do("GET", "/admin/api/org", nil, 200)["id"].(string), "GET", "/admin/api/audit", nil, 200)["data"].([]any)
 	stripeEntries := 0
 	for _, a := range audit {
 		if am := a.(map[string]any); am["actor_type"] == "stripe" && am["action"] == "billing.subscription" {

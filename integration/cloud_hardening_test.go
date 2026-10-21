@@ -26,7 +26,10 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 func auditActions(t *testing.T, b *browser) map[string]int {
 	t.Helper()
 	out := map[string]int{}
-	for _, a := range b.do("GET", "/admin/api/audit", nil, 200)["data"].([]any) {
+	// The audit viewer is a Team feature (free cloud orgs get 402); the
+	// operator can read any org's log.
+	org := b.do("GET", "/admin/api/org", nil, 200)["id"].(string)
+	for _, a := range b.e.adminOrg(org, "GET", "/admin/api/audit", nil, 200)["data"].([]any) {
 		out[a.(map[string]any)["action"].(string)]++
 	}
 	return out

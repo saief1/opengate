@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,6 +48,7 @@ func (s *Server) registerAdmin(mux *http.ServeMux) {
 	h("GET /admin/api/pricing", s.adminPricing)
 	h("POST /admin/api/pricing/reload", s.adminReloadPricing)
 	s.registerAdminPhase2(h)
+	s.registerAdminV3(h)
 	s.registerAuth(mux, h)
 	s.registerCloud(mux, h)
 	mux.Handle("/admin/", s.adminAuth("GET /admin/", func(w http.ResponseWriter, r *http.Request) {
@@ -272,6 +274,9 @@ func (s *Server) adminKillProject(kill bool) http.HandlerFunc {
 		if _, ok := s.projectInOrg(w, r, id); !ok {
 			return
 		}
+		if prev, err := s.store.GetProject(r.Context(), id); err == nil {
+			s.auditChange(r, map[bool]string{true: "project.kill", false: "project.unkill"}[kill], id, map[string]bool{"killed": prev.Killed}, map[string]bool{"killed": kill})
+		}
 		if err := s.store.SetProjectKilled(r.Context(), id, kill); err != nil {
 			storeErr(w, err)
 			return
@@ -367,7 +372,9 @@ func (s *Server) adminKillKey(kill bool) http.HandlerFunc {
 		if !s.keyInOrg(w, r, id) {
 			return
 		}
-		s.audit(r, map[bool]string{true: "key.kill", false: "key.unkill"}[kill], id, nil)
+		if prev, err := s.store.GetKey(r.Context(), id); err == nil {
+			s.auditChange(r, map[bool]string{true: "key.kill", false: "key.unkill"}[kill], id, map[string]bool{"killed": prev.Killed}, map[string]bool{"killed": kill})
+		}
 		if err := s.store.SetKeyKilled(r.Context(), id, kill); err != nil {
 			storeErr(w, err)
 			return
@@ -426,10 +433,12 @@ func (s *Server) adminPatchKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if in.policyInput.set() {
-		if err := s.store.SetKeyPolicy(r.Context(), id, in.merge(k.ModelPolicy)); err != nil {
+		next := in.merge(k.ModelPolicy)
+		if err := s.store.SetKeyPolicy(r.Context(), id, next); err != nil {
 			bad(w, err)
 			return
 		}
+		s.auditChange(r, "key.policy", id, k.ModelPolicy, next)
 	}
 	if in.CustomerID != nil {
 		if *in.CustomerID != "" && !validCustomerID(*in.CustomerID) {
@@ -440,7 +449,7 @@ func (s *Server) adminPatchKey(w http.ResponseWriter, r *http.Request) {
 			storeErr(w, err)
 			return
 		}
-		s.audit(r, "key.bind_customer", id, map[string]string{"customer_id": *in.CustomerID})
+		s.auditChange(r, "key.bind_customer", id, map[string]string{"customer_id": k.CustomerID}, map[string]string{"customer_id": *in.CustomerID})
 	}
 	k, _ = s.store.GetKey(r.Context(), id)
 	writeJSON(w, 200, k)
@@ -451,7 +460,7 @@ func (s *Server) adminRevokeKey(w http.ResponseWriter, r *http.Request) {
 	if !s.keyInOrg(w, r, id) {
 		return
 	}
-	s.audit(r, "key.revoke", id, nil)
+	s.auditChange(r, "key.revoke", id, map[string]bool{"revoked": false}, map[string]bool{"revoked": true})
 	if err := s.store.RevokeKey(r.Context(), id); err != nil {
 		storeErr(w, err)
 		return
@@ -513,7 +522,7 @@ func (s *Server) adminPutLimit(w http.ResponseWriter, r *http.Request) {
 	if !s.scopeInOrg(w, r, in.Scope, in.ScopeID) {
 		return
 	}
-	s.audit(r, "limit.set", in.Scope+":"+in.ScopeID, in.limitInput)
+	s.auditChange(r, "limit.set", in.Scope+":"+in.ScopeID, s.currentLimit(r.Context(), in.Scope, in.ScopeID), in.limitInput)
 	if err := s.store.UpsertLimit(r.Context(), l); err != nil {
 		bad(w, err)
 		return
@@ -530,6 +539,7 @@ func (s *Server) adminDeleteLimit(w http.ResponseWriter, r *http.Request) {
 	if !s.scopeInOrg(w, r, q.Get("scope"), q.Get("scope_id")) {
 		return
 	}
+	s.auditChange(r, "limit.delete", q.Get("scope")+":"+q.Get("scope_id"), s.currentLimit(r.Context(), q.Get("scope"), q.Get("scope_id")), nil)
 	if err := s.store.DeleteLimit(r.Context(), q.Get("scope"), q.Get("scope_id")); err != nil {
 		storeErr(w, err)
 		return
@@ -688,4 +698,19 @@ func limitVisible(l store.Limit, keys, projects map[string]string) bool {
 		return ok
 	}
 	return false
+}
+
+// currentLimit returns the stored limit for a scope (nil if none), for
+// audit before/after records.
+func (s *Server) currentLimit(ctx context.Context, scope, id string) any {
+	ls, err := s.store.ListLimits(ctx)
+	if err != nil {
+		return nil
+	}
+	for _, l := range ls {
+		if l.Scope == scope && l.ScopeID == id {
+			return l
+		}
+	}
+	return nil
 }

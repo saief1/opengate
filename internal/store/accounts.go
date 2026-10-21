@@ -21,6 +21,16 @@ const (
 	RoleViewer = "viewer"
 )
 
+// NormalizeRole maps accepted aliases ("read-only", "readonly",
+// "read_only") to the stored role name; other values pass through.
+func NormalizeRole(r string) string {
+	switch strings.ToLower(strings.TrimSpace(r)) {
+	case "read-only", "readonly", "read_only", RoleViewer:
+		return RoleViewer
+	}
+	return strings.ToLower(strings.TrimSpace(r))
+}
+
 // RoleRank orders roles (higher = more privileged; 0 = invalid).
 func RoleRank(r string) int {
 	switch r {
@@ -203,6 +213,7 @@ type Member struct {
 
 // AddMember upserts a membership.
 func (s *Store) AddMember(ctx context.Context, orgID, userID, role string) error {
+	role = NormalizeRole(role)
 	if RoleRank(role) == 0 {
 		return fmt.Errorf("invalid role %q", role)
 	}
@@ -343,6 +354,7 @@ func (s *Store) CreateInvite(ctx context.Context, in *Invite) error {
 	if err != nil {
 		return err
 	}
+	in.Role = NormalizeRole(in.Role)
 	if RoleRank(in.Role) == 0 {
 		return fmt.Errorf("invalid role %q", in.Role)
 	}
@@ -418,6 +430,19 @@ type AuditEntry struct {
 	Status     int             `json:"status"`
 	IP         string          `json:"ip"`
 	Detail     json.RawMessage `json:"detail,omitempty"`
+	Before     json.RawMessage `json:"before,omitempty"` // state before the change (when the handler captured it)
+	After      json.RawMessage `json:"after,omitempty"`  // state after the change
+}
+
+// AuditFilter narrows ListAuditFiltered.
+type AuditFilter struct {
+	OrgID        string
+	Actor        string // matches actor_email or actor_id (substring)
+	Action       string // prefix match, e.g. "key." or "mcp."
+	Target       string
+	Since, Until time.Time
+	Limit        int
+	Offset       int
 }
 
 // InsertAudit appends an audit entry.
@@ -432,40 +457,85 @@ func (s *Store) InsertAudit(ctx context.Context, a *AuditEntry) error {
 	if len(d) > 4000 {
 		d = d[:4000]
 	}
-	_, err := s.exec(ctx, `INSERT INTO audit_log(id,org_id,ts,actor_type,actor_id,actor_email,action,target,status,ip,detail) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		a.ID, a.OrgID, ms(a.TS), a.ActorType, a.ActorID, a.ActorEmail, a.Action, a.Target, a.Status, a.IP, d)
+	clip := func(b json.RawMessage) string {
+		if len(b) > 8000 || !json.Valid(b) {
+			return ""
+		}
+		return string(b)
+	}
+	_, err := s.exec(ctx, `INSERT INTO audit_log(id,org_id,ts,actor_type,actor_id,actor_email,action,target,status,ip,detail,before_json,after_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		a.ID, a.OrgID, ms(a.TS), a.ActorType, a.ActorID, a.ActorEmail, a.Action, a.Target, a.Status, a.IP, d, clip(a.Before), clip(a.After))
 	return err
 }
 
 // ListAudit returns an org's audit entries, newest first.
 func (s *Store) ListAudit(ctx context.Context, orgID string, limit, offset int) ([]*AuditEntry, int, error) {
+	return s.ListAuditFiltered(ctx, AuditFilter{OrgID: orgID, Limit: limit, Offset: offset})
+}
+
+// ListAuditFiltered returns matching audit entries, newest first, and the
+// total number of matches.
+func (s *Store) ListAuditFiltered(ctx context.Context, f AuditFilter) ([]*AuditEntry, int, error) {
+	where, args := `org_id=?`, []any{f.OrgID}
+	if f.Actor != "" {
+		where += ` AND (actor_email LIKE ? OR actor_id=? OR actor_type=?)`
+		args = append(args, "%"+likeEscape(f.Actor)+"%", f.Actor, f.Actor)
+	}
+	if f.Action != "" {
+		where += ` AND action LIKE ?`
+		args = append(args, likeEscape(f.Action)+"%")
+	}
+	if f.Target != "" {
+		where += ` AND target LIKE ?`
+		args = append(args, "%"+likeEscape(f.Target)+"%")
+	}
+	if !f.Since.IsZero() {
+		where += ` AND ts>=?`
+		args = append(args, ms(f.Since))
+	}
+	if !f.Until.IsZero() {
+		where += ` AND ts<?`
+		args = append(args, ms(f.Until))
+	}
 	var total int
-	if err := s.queryRow(ctx, `SELECT COUNT(*) FROM audit_log WHERE org_id=?`, orgID).Scan(&total); err != nil {
+	if err := s.queryRow(ctx, `SELECT COUNT(*) FROM audit_log WHERE `+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	if limit <= 0 || limit > 500 {
-		limit = 100
+	if f.Limit <= 0 || f.Limit > 5000 {
+		f.Limit = 100
 	}
-	rows, err := s.query(ctx, `SELECT id,org_id,ts,actor_type,actor_id,actor_email,action,target,status,ip,detail FROM audit_log WHERE org_id=? ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?`, orgID, limit, offset)
+	if f.Offset < 0 {
+		f.Offset = 0
+	}
+	rows, err := s.query(ctx, `SELECT id,org_id,ts,actor_type,actor_id,actor_email,action,target,status,ip,detail,before_json,after_json FROM audit_log WHERE `+where+` ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer rows.Close()
 	out := []*AuditEntry{}
+	raw := func(v string) json.RawMessage {
+		if v != "" && json.Valid([]byte(v)) {
+			return json.RawMessage(v)
+		}
+		return nil
+	}
 	for rows.Next() {
 		var a AuditEntry
 		var ts int64
-		var d string
-		if err := rows.Scan(&a.ID, &a.OrgID, &ts, &a.ActorType, &a.ActorID, &a.ActorEmail, &a.Action, &a.Target, &a.Status, &a.IP, &d); err != nil {
+		var d, b, af string
+		if err := rows.Scan(&a.ID, &a.OrgID, &ts, &a.ActorType, &a.ActorID, &a.ActorEmail, &a.Action, &a.Target, &a.Status, &a.IP, &d, &b, &af); err != nil {
 			return nil, 0, err
 		}
 		a.TS = fromMS(ts)
-		if d != "" && json.Valid([]byte(d)) {
-			a.Detail = json.RawMessage(d)
-		}
+		a.Detail, a.Before, a.After = raw(d), raw(b), raw(af)
 		out = append(out, &a)
 	}
 	return out, total, rows.Err()
+}
+
+// likeEscape neutralizes LIKE wildcards in user input.
+func likeEscape(v string) string {
+	return strings.NewReplacer("%", "", "_", "").Replace(v)
 }
 
 // ---------- org scoping helpers ----------

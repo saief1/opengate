@@ -89,11 +89,11 @@ func (s *Server) customerID(r *http.Request, key *store.VirtualKey, proj *store.
 // bill applies markup rules to the final cost.
 func (s *Server) bill(ctx context.Context, rs *reqState) {
 	l := rs.log
-	if l.CostUSD <= 0 {
+	pct, perMTok := s.markups.Rule(ctx, rs.proj.OrgID, l.ProjectID, l.CustomerID, l.Provider+"/"+l.ProviderModel)
+	if l.CostUSD <= 0 && (perMTok <= 0 || l.Status >= 400) {
 		return
 	}
-	pct := s.markups.Pct(ctx, rs.proj.OrgID, l.ProjectID, l.CustomerID, l.Provider+"/"+l.ProviderModel)
-	l.BilledUSD = billing.Billed(l.CostUSD, pct)
+	l.BilledUSD = billing.BilledWithTokens(l.CostUSD, pct, perMTok, int64(l.PromptTokens+l.CompletionTokens))
 }
 
 // ---------- guardrails ----------

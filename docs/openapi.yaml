@@ -15,6 +15,7 @@ tags:
   - name: "Auth"
   - name: "Monitor"
   - name: "Budgets"
+  - name: "MCP"
   - name: "Projects"
   - name: "Guardrails"
   - name: "Keys"
@@ -704,7 +705,7 @@ paths:
     get:
       tags:
         - "Monitor"
-      summary: "Audit log of admin actions"
+      summary: "Append-only audit log of admin actions (filters: actor, action prefix, target, since, until, limit, offset). Team plan."
       operationId: "get_audit"
       x-min-role: "viewer"
       responses:
@@ -719,6 +720,627 @@ paths:
                     type: "array"
                     items:
                       $ref: "#/components/schemas/AuditEntry"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/api/audit/export.csv:
+    get:
+      tags:
+        - "Monitor"
+      summary: "Audit log as CSV (same filters, up to 5000 rows). Team plan."
+      operationId: "get_audit_export_csv"
+      x-min-role: "viewer"
+      responses:
+        "200":
+          description: "OK"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/api/plan:
+    get:
+      tags:
+        - "Auth"
+      summary: "Effective plan, Team feature flags, caller role and coming-soon features"
+      operationId: "get_plan"
+      x-min-role: "viewer"
+      responses:
+        "200":
+          description: "OK"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/api/mcp/servers:
+    get:
+      tags:
+        - "MCP"
+      summary: "MCP servers (secrets never returned)"
+      operationId: "get_mcp_servers"
+      x-min-role: "viewer"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: "object"
+                properties:
+                  data:
+                    type: "array"
+                    items:
+                      $ref: "#/components/schemas/MCPServer"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      tags:
+        - "MCP"
+      summary: "Register an MCP server"
+      operationId: "post_mcp_servers"
+      x-min-role: "admin"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MCPServerInput"
+      responses:
+        "201":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MCPServer"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/admin/api/mcp/servers/{id}":
+    patch:
+      tags:
+        - "MCP"
+      summary: "Update / rotate secret / enable-disable an MCP server"
+      operationId: "patch_mcp_servers_id"
+      x-min-role: "admin"
+      parameters:
+        - name: "id"
+          in: "path"
+          required: true
+          schema:
+            type: "string"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MCPServerInput"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MCPServer"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags:
+        - "MCP"
+      summary: "Delete an MCP server with its policies and credentials"
+      operationId: "delete_mcp_servers_id"
+      x-min-role: "admin"
+      parameters:
+        - name: "id"
+          in: "path"
+          required: true
+          schema:
+            type: "string"
+      responses:
+        "204":
+          description: "OK"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/admin/api/mcp/servers/{id}/credentials":
+    get:
+      tags:
+        - "MCP"
+      summary: "Per-agent upstream credentials (hints only)"
+      operationId: "get_mcp_servers_id_credentials"
+      x-min-role: "viewer"
+      parameters:
+        - name: "id"
+          in: "path"
+          required: true
+          schema:
+            type: "string"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: "object"
+                properties:
+                  data:
+                    type: "array"
+                    items:
+                      $ref: "#/components/schemas/MCPCredential"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      tags:
+        - "MCP"
+      summary: "Set an agent's upstream credential"
+      operationId: "put_mcp_servers_id_credentials"
+      x-min-role: "admin"
+      parameters:
+        - name: "id"
+          in: "path"
+          required: true
+          schema:
+            type: "string"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: "object"
+              properties:
+                agent:
+                  type: "string"
+                header:
+                  type: "string"
+                secret:
+                  type: "string"
+              required:
+                - "agent"
+                - "secret"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MCPCredential"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/admin/api/mcp/servers/{id}/credentials/{cid}":
+    delete:
+      tags:
+        - "MCP"
+      summary: "Delete an agent credential"
+      operationId: "delete_mcp_servers_id_credentials_cid"
+      x-min-role: "admin"
+      parameters:
+        - name: "id"
+          in: "path"
+          required: true
+          schema:
+            type: "string"
+        - name: "cid"
+          in: "path"
+          required: true
+          schema:
+            type: "string"
+      responses:
+        "204":
+          description: "OK"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/api/mcp/policies:
+    get:
+      tags:
+        - "MCP"
+      summary: "Tool allow/deny and rate-limit rules (filter: server_id)"
+      operationId: "get_mcp_policies"
+      x-min-role: "viewer"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: "object"
+                properties:
+                  data:
+                    type: "array"
+                    items:
+                      $ref: "#/components/schemas/MCPPolicy"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      tags:
+        - "MCP"
+      summary: "Add a tool rule"
+      operationId: "post_mcp_policies"
+      x-min-role: "admin"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MCPPolicy"
+      responses:
+        "201":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MCPPolicy"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  "/admin/api/mcp/policies/{id}":
+    delete:
+      tags:
+        - "MCP"
+      summary: "Delete a tool rule"
+      operationId: "delete_mcp_policies_id"
+      x-min-role: "admin"
+      parameters:
+        - name: "id"
+          in: "path"
+          required: true
+          schema:
+            type: "string"
+      responses:
+        "204":
+          description: "OK"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/api/mcp/check:
+    post:
+      tags:
+        - "MCP"
+      summary: "Dry run: would this agent be allowed to call this tool?"
+      operationId: "post_mcp_check"
+      x-min-role: "viewer"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: "object"
+              properties:
+                server_id:
+                  type: "string"
+                agent:
+                  type: "string"
+                tool:
+                  type: "string"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: "object"
+                properties:
+                  allowed:
+                    type: "boolean"
+                  rpm:
+                    type: "integer"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/api/mcp/calls:
+    get:
+      tags:
+        - "MCP"
+      summary: "MCP tool-call log (filters: server_id, agent, tool, errors=1)"
+      operationId: "get_mcp_calls"
+      x-min-role: "viewer"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: "object"
+                properties:
+                  data:
+                    type: "array"
+                    items:
+                      $ref: "#/components/schemas/MCPCall"
         "400":
           description: "Error"
           content:
@@ -3629,8 +4251,9 @@ components:
           type: "string"
         markup_pct:
           type: "number"
-        fixed_usd_per_1k_requests:
+        per_mtok_usd:
           type: "number"
+          description: "Flat USD fee per million tokens, added to the percentage markup"
     Org:
       type: "object"
       properties:
@@ -3659,6 +4282,7 @@ components:
             - "admin"
             - "member"
             - "viewer"
+          description: "viewer = read-only (\"read-only\" is accepted as an alias)"
         joined_at:
           type: "string"
           format: "date-time"
@@ -3690,8 +4314,132 @@ components:
           type: "string"
         ip:
           type: "string"
+        actor_type:
+          type: "string"
+        actor_email:
+          type: "string"
+        status:
+          type: "integer"
         detail:
           type: "object"
+        before:
+          type: "object"
+          description: "State before the change"
+        after:
+          type: "object"
+          description: "State after the change"
+    MCPServer:
+      type: "object"
+      properties:
+        id:
+          type: "string"
+        name:
+          type: "string"
+        url:
+          type: "string"
+        transport:
+          type: "string"
+          enum:
+            - "http"
+            - "sse"
+        auth_header:
+          type: "string"
+        has_secret:
+          type: "boolean"
+        secret_hint:
+          type: "string"
+        default_rpm:
+          type: "integer"
+        enabled:
+          type: "boolean"
+        gateway_path:
+          type: "string"
+    MCPServerInput:
+      type: "object"
+      properties:
+        name:
+          type: "string"
+        url:
+          type: "string"
+        transport:
+          type: "string"
+        auth_header:
+          type: "string"
+        secret:
+          type: "string"
+          description: "Write-only upstream secret (stored encrypted, never returned)"
+        default_rpm:
+          type: "integer"
+        enabled:
+          type: "boolean"
+        clear_secret:
+          type: "boolean"
+    MCPCredential:
+      type: "object"
+      properties:
+        id:
+          type: "string"
+        server_id:
+          type: "string"
+        agent:
+          type: "string"
+        header:
+          type: "string"
+        secret_hint:
+          type: "string"
+    MCPPolicy:
+      type: "object"
+      properties:
+        id:
+          type: "string"
+        server_id:
+          type: "string"
+        agent:
+          type: "string"
+          description: "empty = every agent"
+        tool:
+          type: "string"
+          description: "exact name or prefix*"
+        action:
+          type: "string"
+          enum:
+            - "allow"
+            - "deny"
+        rpm:
+          type: "integer"
+      required:
+        - "server_id"
+        - "tool"
+        - "action"
+    MCPCall:
+      type: "object"
+      properties:
+        id:
+          type: "string"
+        ts:
+          type: "string"
+          format: "date-time"
+        agent:
+          type: "string"
+        key_id:
+          type: "string"
+        server_name:
+          type: "string"
+        method:
+          type: "string"
+        tool:
+          type: "string"
+        args:
+          type: "string"
+          description: "Redacted, truncated JSON arguments"
+        redacted:
+          type: "boolean"
+        status:
+          type: "integer"
+        error_code:
+          type: "string"
+        latency_ms:
+          type: "integer"
     Me:
       type: "object"
       properties:

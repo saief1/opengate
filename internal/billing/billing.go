@@ -76,6 +76,11 @@ func ResolveMarkup(rules []*store.MarkupRule, orgID, projectID, customerID, mode
 // Billed applies a markup to a cost.
 func Billed(cost, markupPct float64) float64 { return cost * (1 + markupPct/100) }
 
+// BilledWithTokens applies a percentage markup plus a per-million-token fee.
+func BilledWithTokens(cost, markupPct, perMTok float64, tokens int64) float64 {
+	return Billed(cost, markupPct) + perMTok*float64(tokens)/1e6
+}
+
 // Markups caches markup rules briefly so the hot path does not hit the DB.
 type Markups struct {
 	st  *store.Store
@@ -95,8 +100,14 @@ func (m *Markups) Invalidate() {
 	m.mu.Unlock()
 }
 
-// Pct resolves the markup for a request.
+// Pct resolves the markup percentage for a request.
 func (m *Markups) Pct(ctx context.Context, orgID, projectID, customerID, model string) float64 {
+	p, _ := m.Rule(ctx, orgID, projectID, customerID, model)
+	return p
+}
+
+// Rule resolves the markup percentage and per-million-token fee.
+func (m *Markups) Rule(ctx context.Context, orgID, projectID, customerID, model string) (float64, float64) {
 	m.mu.Lock()
 	if time.Since(m.at) > m.ttl {
 		if rs, err := m.st.ListMarkupRules(ctx, ""); err == nil {
@@ -105,8 +116,11 @@ func (m *Markups) Pct(ctx context.Context, orgID, projectID, customerID, model s
 	}
 	rs := m.rs
 	m.mu.Unlock()
-	p, _ := ResolveMarkup(rs, orgID, projectID, customerID, model)
-	return p
+	p, r := ResolveMarkup(rs, orgID, projectID, customerID, model)
+	if r == nil {
+		return 0, 0
+	}
+	return p, r.PerMTokUSD
 }
 
 // ---------- CSV export ----------

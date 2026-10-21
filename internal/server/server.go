@@ -82,6 +82,9 @@ type Server struct {
 	sprayMu    sync.Mutex
 	sprayCount map[string]int
 
+	mcpRates  budget.RateStore // per agent+tool MCP rate limits
+	mcpClient *http.Client
+
 	keyMu    sync.Mutex
 	keyCache map[string]string // provider name -> decrypted API key ("" = none)
 }
@@ -120,6 +123,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	if o.Config.TrustProxyHeaders && len(o.Config.TrustedProxies) == 0 {
 		s.log.Warn("trust_proxy_headers is on without trusted_proxies: only the rightmost X-Forwarded-For hop is used; set trusted_proxies to your proxy CIDRs")
 	}
+	s.mcpRates = rates
+	s.mcpClient = &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone(),
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	s.sprayCount = map[string]int{}
 	s.pwSem = make(chan struct{}, 2*runtime.NumCPU())
 	for _, c := range o.Config.TrustedProxies {
@@ -233,6 +239,12 @@ func (s *Server) Handler() http.Handler {
 	if !s.cfg.Metrics.Disabled {
 		mux.HandleFunc("GET /metrics", s.handleMetrics)
 	}
+	if !s.cfg.MCP.Disabled {
+		mux.HandleFunc("POST /mcp/{server}", s.limitInflight(s.handleMCP))
+		mux.HandleFunc("GET /mcp/{server}", s.handleMCP)
+		mux.HandleFunc("DELETE /mcp/{server}", s.handleMCP)
+		mux.HandleFunc("POST /mcp/{server}/{rest...}", s.limitInflight(s.handleMCP))
+	}
 	s.registerAdmin(mux)
 	if s.webFS != nil && !s.cfg.DisableDashboard {
 		files := http.FileServerFS(s.webFS)
@@ -246,7 +258,7 @@ func (s *Server) Handler() http.Handler {
 			http.Redirect(w, r, "/ui/", http.StatusFound)
 		})
 	}
-	return s.recoverer(s.accessLog(commonHeaders(mux)))
+	return s.recoverer(s.accessLog(commonHeaders(s.cors(mux))))
 }
 
 func commonHeaders(next http.Handler) http.Handler {

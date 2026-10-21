@@ -43,7 +43,6 @@ func (s *Server) registerAuth(mux *http.ServeMux, h func(string, http.HandlerFun
 	h("GET /admin/api/invites", s.adminInvites)
 	h("POST /admin/api/invites", s.adminCreateInvite)
 	h("DELETE /admin/api/invites/{id}", s.adminRevokeInvite)
-	h("GET /admin/api/audit", s.adminAudit)
 	h("GET /admin/api/settings", s.adminSettings)
 }
 
@@ -498,13 +497,18 @@ func (s *Server) adminPatchMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid := r.PathValue("id")
+	in.Role = store.NormalizeRole(in.Role)
 	cur, err := s.store.MemberRole(r.Context(), orgID(r), uid)
 	if err != nil || cur == "" {
 		writeError(w, http.StatusNotFound, "invalid_request_error", "not_found", "member not found")
 		return
 	}
 	if store.RoleRank(in.Role) == 0 {
-		bad(w, errors.New("role must be owner, admin, member or viewer"))
+		bad(w, errors.New("role must be owner, admin, member or read-only (viewer)"))
+		return
+	}
+	if !s.planAllows(r, FeatureRoles) && (in.Role == store.RoleMember || in.Role == store.RoleViewer) {
+		planRequired(w, FeatureRoles)
 		return
 	}
 	if !canManage(p, cur) || !canManage(p, in.Role) {
@@ -521,7 +525,7 @@ func (s *Server) adminPatchMember(w http.ResponseWriter, r *http.Request) {
 		storeErr(w, err)
 		return
 	}
-	s.audit(r, "member.role", uid, map[string]string{"from": cur, "to": in.Role})
+	s.auditChange(r, "member.role", uid, map[string]string{"role": cur}, map[string]string{"role": in.Role})
 	writeJSON(w, 200, map[string]string{"user_id": uid, "role": in.Role})
 }
 
@@ -570,6 +574,15 @@ func (s *Server) adminCreateInvite(w http.ResponseWriter, r *http.Request) {
 		bad(w, err)
 		return
 	}
+	in.Role = store.NormalizeRole(in.Role)
+	rolesOn := s.planAllows(r, FeatureRoles)
+	if in.Role == "" && !rolesOn {
+		in.Role = store.RoleAdmin // without Team roles everyone is an admin
+	}
+	if !rolesOn && (in.Role == store.RoleMember || in.Role == store.RoleViewer) {
+		planRequired(w, FeatureRoles)
+		return
+	}
 	if in.Role == "" {
 		in.Role = store.RoleMember
 	}
@@ -607,17 +620,6 @@ func (s *Server) adminRevokeInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(r, "invite.revoke", r.PathValue("id"), nil)
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) adminAudit(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	limit, offset := atoiDefault(q.Get("limit"), 100), atoiDefault(q.Get("offset"), 0)
-	rows, total, err := s.store.ListAudit(r.Context(), orgID(r), limit, offset)
-	if err != nil {
-		storeErr(w, err)
-		return
-	}
-	writeJSON(w, 200, map[string]any{"data": rows, "total": total})
 }
 
 func atoiDefault(s string, d int) int {
