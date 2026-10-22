@@ -182,6 +182,8 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			if err := s.store.InsertMCPCall(ctx, c.log); err != nil {
 				s.log.Error("insert mcp call", "err", err)
+			} else {
+				s.publishMCP(c.log)
 			}
 			cancel()
 		}

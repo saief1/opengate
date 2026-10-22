@@ -118,6 +118,7 @@ func (s *Server) finish(rs *reqState) {
 	}
 	rs.res.Commit(ctx, rs.log.CostUSD)
 	s.observe(rs.log)
+	s.publishLog(ctx, rs.log)
 }
 
 func (s *Server) reject(w http.ResponseWriter, rs *reqState, status int, typ, code, msg string, retryAfter time.Duration) {

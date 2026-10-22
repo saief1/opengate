@@ -96,7 +96,7 @@ func (s *Server) adminPlan(w http.ResponseWriter, r *http.Request) {
 	}
 	p := principalOf(r)
 	writeJSON(w, 200, map[string]any{"plan": s.planName(r), "features": feats, "coming_soon": comingSoon,
-		"role": p.Role, "cloud": s.cloud != nil})
+		"role": p.Role, "cloud": s.cloud != nil, "demo": s.demoReady(orgID(r))})
 }
 
 // ---------- audit ----------

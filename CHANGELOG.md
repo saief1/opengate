@@ -5,6 +5,20 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] (features-v3)
 
+### Live dashboard and demo site
+- `GET /admin/api/stream` (Server-Sent Events, same auth and roles as the admin API, scoped to the caller's org):
+  new request log rows (bodies stripped), MCP calls, budget alerts, kill-switch changes and a spend tick every 10s.
+- Dashboard subscribes (fetch-based, so admin-token sessions work too) and refreshes overview counters, charts,
+  request log, MCP call log, budgets and policies in place, highlights new rows, shows a pulsing *Live* indicator and
+  toasts for budget near/at limit, agent killed and tool denied; falls back to 5s polling when streaming fails.
+- Demo mode (only when `OPENGATE_DEMO_MOCK_LISTEN` is set): `OPENGATE_DEMO_TRAFFIC=1` runs an in-process traffic
+  generator through the gateway's own demo keys (normal calls, auto routing, failover, budget 429s, prompt-injection
+  block, PII redaction, Acme/Globex/Initech customers, allowed and denied MCP tool calls, a periodic kill-switch
+  cycle); its rows are pruned after 30 days and capped at 60k per table. Dashboard *Try it* button
+  (`POST /admin/api/demo/try`). Public, unauthenticated, rate-limited `GET /public/live` (sanitized aggregates and
+  recent rows) and `POST /public/playground` power a live counter strip, live request log and playground on the
+  landing page.
+
 ### MCP tool gateway
 - `/mcp/{server}` proxies MCP (streamable HTTP and legacy HTTP+SSE) with the agent's virtual key: kill switch,
   budgets and key rate limits apply to `tools/call`; per-agent allow/deny tool rules with wildcards (denied tools are

@@ -9,7 +9,13 @@
  <span class=ann><b>NEW</b>Per-customer budgets &amp; hard kill switch <span class="x5">→</span></span>
  <h1>One gateway for every<br><em>AI call</em> you ship.</h1>
  <p class=sub>Route LLM requests across providers, track spend per key, agent and customer, and stop runaway costs before they hit your invoice.</p>
- <div class=ctas><a class="b bp x6" href="./#signup">Start free →</a><span class=inst><span class="x7">$</span> docker compose up -d</span></div>
+ <div class=ctas><a class="b bp x6" href="./#signup">Start free →</a><button type=button class="inst copy" data-copy="git clone https://github.com/saief1/opengate &amp;&amp; cd opengate &amp;&amp; docker compose up -d" title="Copy install command"><span class="x7">$</span> git clone https://github.com/saief1/opengate &amp;&amp; cd opengate &amp;&amp; docker compose up -d <span class=cp>Copy</span></button></div>
+ <div class=live-strip id=live-strip hidden>
+  <span class=ls-tag><span class=ldot></span>LIVE · demo gateway</span>
+  <div class=ls-stat><b data-count=requests_routed>0</b><span>requests routed · 30d</span></div>
+  <div class=ls-stat><b data-count=saved_usd data-fmt=usd>$0.00</b><span>saved by smart routing</span></div>
+  <div class=ls-stat><b data-count=tool_calls_blocked>0</b><span>tool calls blocked</span></div>
+ </div>
 </section>
 <div class=app>
  <div class=pane><div class=ph><span class="x8"></span><span class="x8"></span><span class="x8"></span><span class="x9">app/ai.ts</span><span class="x10">TypeScript · OpenAI SDK</span></div>
@@ -28,16 +34,32 @@
  <div><span class=ln>12</span></div>
  <div><span class=ln>13</span><span class=c4>// response headers: X-OpenGate-Cost-USD, -Provider, -Route</span></div>
  </div></div>
- <div class="pane x11"><div class=ph><span class=gdot></span><span class="x12">Every call, priced</span><span class="x10">list price · USD / 1M in · out</span></div>
+ <div class="pane x11"><div class=ph><span class=gdot></span><span class="x12" id=live-title>Every call, priced</span><span class="x10" id=live-sub>list price · USD / 1M in · out</span></div>
+  <div id=live-log>
   <div class=r><span class="mono x13">O</span><span>openai/gpt-4o-mini</span><span class=p>$0.15</span><span class="p ok">$0.60</span></div>
   <div class=r><span class="mono x14">A</span><span>anthropic/claude-haiku-4-5</span><span class=p>$1.00</span><span class="p ok">$5.00</span></div>
   <div class=r><span class="mono x15">G</span><span>gemini/gemini-2.5-flash</span><span class=p>$0.30</span><span class="p ok">$2.50</span></div>
   <div class=r><span class="mono x16">L</span><span>self-hosted vLLM</span><span class=p>your cost</span><span class="p ok"></span></div>
   <div class=r><span class="mono x17">↺</span><span class="x18">smart → next provider on 429 / 5xx</span><span class=p>alias</span><span class="p x18">failover</span></div><div class=r><span class="mono x19">!</span><span class="x20">key over its daily cap</span><span class=p>403</span><span class="p x20">blocked</span></div>
- </div>
+ </div></div>
  
 </div>
 
+<section id=playground class="sec pg-sec" hidden><div class=ey>Playground</div><h2>Route a prompt. <span>Watch the gate decide.</span></h2>
+<p class=pg-lede>Runs through the live demo gateway against a mock provider: no real model is called and nothing you type is stored beyond the demo's request log.</p>
+<div class=pg>
+ <div class="fc pg-in">
+  <div class=pg-presets role=group aria-label="Example prompts">
+   <button type=button class=chip data-preset=simple>Simple task</button><button type=button class=chip data-preset=complex>Hard reasoning</button><button type=button class=chip data-preset=pii>Contains PII</button><button type=button class=chip data-preset=injection>Prompt injection</button>
+  </div>
+  <label class=pg-lbl for=pg-prompt>Prompt · model: <span class=m>auto</span></label>
+  <textarea id=pg-prompt maxlength=500 rows=5 placeholder="Type a prompt, or pick an example above"></textarea>
+  <div class=pg-row><span class="m pg-count" id=pg-count>0 / 500</span><button type=button class="b bp" id=pg-run>Route it →</button></div>
+ </div>
+ <div class="fc pg-out" id=pg-out aria-live=polite>
+  <div class=pg-empty>Pick an example or type a prompt. OpenGate classifies it, picks the cheapest model that qualifies, redacts PII and blocks injections before anything reaches a provider.</div>
+ </div>
+</div></section>
 <section id=models class="sec x21"><div class="m x22">ROUTES TO ANY OPENAI‑COMPATIBLE PROVIDER</div>
 <div class="x23"><span class="x24"><span class="mono x25">O</span>OpenAI</span><span class="x24"><span class="mono x26">A</span>Anthropic</span><span class="x24"><span class="mono x27">G</span>Gemini</span><span class="x24"><span class="mono x28">R</span>OpenRouter</span><span class="x24"><span class="mono x29">L</span>self‑hosted vLLM</span></div></section>
 <section id=features class=sec><div class=ey>Features</div><h2>Control at 3 a.m.,<br><span>not a report at 9.</span></h2><div class="cols x30"><div class=fc><div class=ic><svg viewBox="0 0 24 24"><path d="M12 2v10M18.4 6.6a9 9 0 1 1-12.8 0"/></svg></div><h4>Hard budgets &amp; kill switch</h4><p>Daily, monthly and lifetime USD caps per key, agent or project. Over‑limit calls are refused before they reach the provider.</p></div><div class=fc><div class=ic><svg viewBox="0 0 24 24"><circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M8 19h8a3 3 0 0 0 0-6H8a3 3 0 0 1 0-6h8"/></svg></div><h4>Failover &amp; smart routing</h4><p>Ordered fallbacks per alias, retries with backoff, and an auto alias that picks the cheapest model that qualifies.</p></div><div class=fc><div class=ic><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></div><h4>Every request, priced</h4><p>Tokens, cost, latency, provider and attempts for every call, broken down by key, agent and customer.</p></div><div class=fc><div class=ic><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0"/></svg></div><h4>Cost per customer</h4><p>Tag calls with a header, apply markup, and sync usage to your Stripe billing meter.</p></div><div class=fc><div class=ic><svg viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/></svg></div><h4>Guardrails</h4><p>Redact or block emails, cards, keys and other PII in requests and responses. Allow‑list models per project.</p></div><div class=fc><div class=ic><svg viewBox="0 0 24 24"><path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/></svg></div><h4>Open source core</h4><p>Apache‑2.0, a single static Go binary. Self‑host with one command, or use OpenGate Cloud.</p></div></div></section>
@@ -45,10 +67,11 @@
 <div class=fc><span class="m x31">02</span><h4>Swap the base URL</h4><p>Any OpenAI SDK works. Other providers are translated both ways.</p><div class=snip><span class="x32"># before</span><br>base_url=<span class="x5">"https://api.openai.com/v1"</span><br><span class="x32"># after</span><br>base_url=<span class="x7">"https://gate.your-co.com/v1"</span></div></div>
 <div class=fc><span class="m x31">03</span><h4>Watch and cap</h4><p>Spend, savings and every request, live. Kill anything in one click.</p><div class=snip><span class="x7">●</span> spend today, live<br><span class="x20">●</span> scraper · 403 killed</div></div></div></section>
 <section id=pricing class=sec><div class="x33"><div><div class=ey>Pricing</div><h2>Start free. <span>Self‑host forever.</span></h2></div><span class="pill x34">Draft pricing · not final</span></div><div class="cols x30"><div class="fc x35"><div class="x36"><span class="x37">Free</span></div><div class="x38">$0</div><div class="m x39">forever</div><div class=chk><b>✓</b>10k requests / month</div><div class=chk><b>✓</b>3 team members</div><div class=chk><b>✓</b>2 projects</div><div class=chk><b>✓</b>7‑day request logs</div><div class="x40"></div><a class="b x41" href="./#signup">Start free</a></div><div class="fc x42"><div class="x36"><span class="x37">Team</span><span class="pill x43">Recommended</span></div><div class="x38">$49</div><div class="m x39">per month</div><div class=chk><b>✓</b>1M requests / month</div><div class=chk><b>✓</b>25 team members</div><div class=chk><b>✓</b>Unlimited projects</div><div class=chk><b>✓</b>30‑day request logs</div><div class=chk><b>✓</b>Email support</div><div class="x40"></div><a class="b x44" href="./#signup?plan=team">Start 14‑day trial</a></div><div class="fc x35"><div class="x36"><span class="x37">Enterprise</span></div><div class="x38">Custom</div><div class="m x39">contact sales</div><div class=chk><b>✓</b>Unlimited requests</div><div class=chk><b>✓</b>SSO &amp; custom contracts <span class=soon2>SSO coming soon</span></div><div class=chk><b>✓</b>1‑year request logs</div><div class=chk><b>✓</b>Priority support</div><div class="x40"></div><a class="b x45" href="https://github.com/saief1/opengate">Contact sales</a></div></div></section>
-<section id=start class=sec><div class="fc x46"><h2 class="x47">Put a gate in front of every AI call.</h2><p class="x48">Two minutes, one line changed.</p><div class="ctas x49"><a class="b bp x6" href="./#signup">Start free →</a><span class=inst><span class="x7">$</span> docker compose up -d</span></div></div></section>
+<section id=start class=sec><div class="fc x46"><h2 class="x47">Put a gate in front of every AI call.</h2><p class="x48">Two minutes, one line changed.</p><div class="ctas x49"><a class="b bp x6" href="./#signup">Start free →</a><button type=button class="inst copy" data-copy="git clone https://github.com/saief1/opengate &amp;&amp; cd opengate &amp;&amp; docker compose up -d" title="Copy install command"><span class="x7">$</span> git clone https://github.com/saief1/opengate &amp;&amp; cd opengate &amp;&amp; docker compose up -d <span class=cp>Copy</span></button></div></div></section>
 <footer class="x50">
 <div><div class="x51"><div class=logo><svg width=13 height=13 viewBox="0 0 24 24" fill=none stroke=#fff stroke-width=2.6 stroke-linecap=round><path d="M5 20V9l7-5 7 5v11"/><path d="M10 20v-5h4v5"/></svg></div><b class="x52">OpenGate</b></div><div class="m x53">Open‑source core · Apache‑2.0<br>© 2026 OpenGate</div></div>
 <div class="x54"><div class="m x55">PRODUCT</div>Gateway<br>Budgets<br>Routing<br>Pricing</div>
 <div class="x54"><div class="m x55">DEVELOPERS</div>Docs<br>API reference<br>Self‑hosting<br>Changelog</div>
 <div class="x54"><div class="m x55">COMPANY</div>About<br>Security<br>Status <span class="gdot x56"></span><br>Contact</div></footer>
+<script src="landing.js" defer></script>
 </body></html>

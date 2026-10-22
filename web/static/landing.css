@@ -106,3 +106,73 @@ a{color:inherit;text-decoration:none}nav a:hover{color:var(--tx)}a.b{display:inl
 .x54{line-height:2.1}
 .x55{font-size:11px;color:var(--t3)}
 .x56{margin-left:4px}
+
+/* ---- live demo additions (landing.js) ---- */
+button.inst{cursor:pointer;display:inline-flex;align-items:center;gap:8px;font:13px "Geist Mono",monospace;transition:border-color .2s,color .2s}
+button.inst:hover{border-color:rgba(43,212,154,.4);color:var(--tx)}
+.inst .cp{font:500 10.5px "Geist Mono";color:var(--t3);border-left:1px solid var(--ln2);padding-left:9px;margin-left:4px}
+.inst.ok .cp{color:var(--g2)}
+.live-strip{display:inline-flex;align-items:center;gap:0;margin:28px auto 0;border:1px solid var(--ln2);border-radius:12px;background:rgba(15,15,17,.7);padding:0;overflow:hidden}
+.live-strip[hidden]{display:none}
+.ls-tag{display:inline-flex;align-items:center;gap:8px;font:500 10.5px "Geist Mono";letter-spacing:.06em;color:var(--g2);padding:14px 18px;border-right:1px solid var(--ln)}
+.ldot{position:relative;width:7px;height:7px;border-radius:50%;background:var(--g2);box-shadow:0 0 8px var(--g2);display:inline-block}
+.ldot:after{content:"";position:absolute;inset:-4px;border-radius:50%;border:1px solid var(--g2);animation:lp 1.8s ease-out infinite}
+@keyframes lp{0%{transform:scale(.6);opacity:.9}100%{transform:scale(1.9);opacity:0}}
+.ls-stat{display:flex;flex-direction:column;align-items:flex-start;padding:10px 22px;border-right:1px solid var(--ln);min-width:170px}
+.ls-stat:last-child{border-right:0}
+.ls-stat b{font:600 20px "Geist Mono";letter-spacing:-.02em;color:var(--tx)}
+.ls-stat b.tick{animation:tk 1.2s ease-out}
+.ls-stat span{font-size:11.5px;color:var(--t3);margin-top:2px}
+@keyframes tk{0%{color:var(--g2);text-shadow:0 0 14px rgba(43,212,154,.6)}100%{color:var(--tx);text-shadow:none}}
+#live-log{position:relative}
+#live-log.on{height:332px;overflow:hidden;-webkit-mask-image:linear-gradient(#000 78%,transparent);mask-image:linear-gradient(#000 78%,transparent)}
+.lr{display:grid;grid-template-columns:58px 1fr 52px 64px 118px;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--ln);font:11.5px "Geist Mono"}
+.lr .lt{color:var(--t3)}
+.lr .lm{display:flex;flex-direction:column;min-width:0}.lr .lmn{color:var(--tx);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lr .lmr{color:var(--t3);font-size:10.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lr .ll,.lr .lc{color:var(--t2);text-align:right}
+.lr .lb{display:flex;gap:4px;justify-content:flex-end}
+.bd{font:500 10px "Geist Mono";font-style:normal;padding:2px 6px;border-radius:99px;border:1px solid var(--ln2);color:var(--t2);white-space:nowrap}
+.bd.ok,.bd.g{color:var(--g2);border-color:rgba(43,212,154,.3);background:rgba(43,212,154,.06)}
+.bd.am{color:var(--am);border-color:rgba(232,178,74,.35);background:rgba(232,178,74,.06)}
+.bd.rd{color:var(--rd);border-color:rgba(240,106,106,.35);background:rgba(240,106,106,.06)}
+.bd.vi{color:var(--vi);border-color:rgba(181,140,245,.35);background:rgba(181,140,245,.06)}
+.bd.bl{color:var(--bl);border-color:rgba(122,162,247,.35)}
+.lr.enter{animation:lrin .6s cubic-bezier(.2,.7,.2,1)}
+@keyframes lrin{0%{opacity:0;transform:translateY(-10px);background:rgba(43,212,154,.12)}60%{opacity:1;transform:none}100%{background:transparent}}
+/* playground */
+.pg-sec[hidden]{display:none}
+.pg-lede{color:var(--t2);font-size:14px;line-height:1.55;max-width:640px;margin-top:14px}
+.pg{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:36px}
+.pg-presets{display:flex;flex-wrap:wrap;gap:8px}
+.chip{font:500 12px Geist,system-ui;color:var(--t2);background:rgba(255,255,255,.02);border:1px solid var(--ln2);border-radius:99px;padding:6px 12px;cursor:pointer;transition:all .15s}
+.chip:hover{color:var(--tx);border-color:rgba(255,255,255,.2)}
+.chip.on{color:var(--g2);border-color:rgba(43,212,154,.45);background:rgba(43,212,154,.08)}
+.pg-lbl{display:block;font-size:12px;color:var(--t3);margin:18px 0 8px}
+.pg textarea{width:100%;resize:vertical;min-height:110px;background:#0B0B0D;border:1px solid var(--ln2);border-radius:8px;color:var(--tx);font:13px/1.55 "Geist Mono",monospace;padding:12px 14px;outline:none}
+.pg textarea:focus{border-color:rgba(43,212,154,.45);box-shadow:0 0 0 3px rgba(43,212,154,.12)}
+.pg-row{display:flex;align-items:center;justify-content:space-between;margin-top:12px}
+.pg-count{font-size:11px;color:var(--t3)}
+.pg-row .b{cursor:pointer}.pg-row .b:disabled{opacity:.6;cursor:progress}
+.pg-out{min-height:260px;transition:opacity .25s}
+.pg-out.busy{opacity:.55}
+.pg-out.show>*{animation:pgin .4s ease-out both}
+.pg-out.show>*:nth-child(2){animation-delay:.04s}.pg-out.show>*:nth-child(3){animation-delay:.08s}.pg-out.show>*:nth-child(4){animation-delay:.12s}.pg-out.show>*:nth-child(5){animation-delay:.16s}.pg-out.show>*:nth-child(6){animation-delay:.2s}.pg-out.show>*:nth-child(7){animation-delay:.24s}.pg-out.show>*:nth-child(8){animation-delay:.28s}
+@keyframes pgin{0%{opacity:0;transform:translateY(6px)}100%{opacity:1;transform:none}}
+.pg-empty{color:var(--t3);font-size:13.5px;line-height:1.6}
+.pg-head{font:500 11px "Geist Mono";letter-spacing:.06em;text-transform:uppercase;margin-bottom:12px}
+.pg-head.ok{color:var(--g2)}.pg-head.bad{color:var(--rd)}.pg-head.warn{color:var(--am)}
+.pkv{display:flex;justify-content:space-between;gap:16px;padding:8px 0;border-bottom:1px solid var(--ln);font-size:13px;color:var(--t2)}
+.pkv b{font:500 12.5px "Geist Mono";color:var(--tx);text-align:right}
+.pkv b.g{color:var(--g2)}.pkv b.rd{color:var(--rd)}.pkv b.vi{color:var(--vi)}
+.pg-note{color:var(--t3);font-size:12.5px;line-height:1.55;margin-top:14px}
+.pg-reply{margin-top:14px;border:1px solid var(--ln);border-radius:8px;background:#0B0B0D;padding:10px 12px}
+.pg-reply span{font-size:10.5px;color:var(--t3)}.pg-reply p{color:var(--t2);font-size:12.5px;line-height:1.5;margin-top:4px;word-break:break-word}
+/* scroll fade-ins (only when JS runs and motion is allowed) */
+.js .reveal{opacity:0;transform:translateY(18px);transition:opacity .7s ease,transform .7s cubic-bezier(.2,.7,.2,1)}
+.js .reveal.in{opacity:1;transform:none}
+@media (prefers-reduced-motion: reduce){
+  .ldot:after,.ls-stat b.tick,.lr.enter,.pg-out.show>*{animation:none}
+  .js .reveal{opacity:1;transform:none;transition:none}
+  button.inst,.chip,.pg-out{transition:none}
+}

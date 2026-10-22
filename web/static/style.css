@@ -232,3 +232,34 @@ button.chip:hover{border-color:rgba(255,255,255,.25)}
 .auth .sc .sf{border-top:1px solid var(--ln);padding:11px 20px;font:11px "Geist Mono";color:var(--t3);display:flex}
 @media (max-width:1100px){.split,.split380,.split360,.split420,.g3{grid-template-columns:1fr}.auth{grid-template-columns:1fr}.auth .r{display:none}}
 table.tight td,table.tight th{padding:8px 10px}table.tight td:first-child,table.tight th:first-child{padding-left:16px}
+
+/* live updates (live.js) */
+.live-ind{display:inline-flex;align-items:center;gap:7px;height:28px;padding:0 10px;border:1px solid var(--ln2);border-radius:7px;font:500 11.5px "Geist Mono",monospace;color:var(--t2);background:rgba(255,255,255,.02);user-select:none}
+.live-ind .ldot{position:relative;width:7px;height:7px;border-radius:50%;background:var(--t3)}
+.live-ind.live{color:var(--g2);border-color:rgba(43,212,154,.3)}
+.live-ind.live .ldot{background:var(--g2);box-shadow:0 0 8px var(--g2)}
+.live-ind.live .ldot:after{content:"";position:absolute;inset:-4px;border-radius:50%;border:1px solid var(--g2);animation:lpulse 1.8s ease-out infinite}
+.live-ind.polling{color:var(--am);border-color:rgba(232,178,74,.3)}.live-ind.polling .ldot{background:var(--am)}
+.live-ind.connecting .ldot{animation:blink 1s step-end infinite}
+@keyframes lpulse{0%{transform:scale(.6);opacity:.9}100%{transform:scale(1.9);opacity:0}}
+@keyframes lflash{0%{background:rgba(43,212,154,.22);box-shadow:inset 2px 0 0 var(--g2)}100%{background:transparent;box-shadow:inset 2px 0 0 transparent}}
+@keyframes lin{0%{opacity:0;transform:translateY(-6px)}100%{opacity:1;transform:none}}
+@keyframes lbump{0%{color:var(--g2);text-shadow:0 0 12px rgba(43,212,154,.6)}100%{color:inherit;text-shadow:none}}
+.flash{animation:lflash 2.4s ease-out,lin .35s ease-out}
+.flash.mine{animation:lflash 4s ease-out,lin .35s ease-out}
+.kv.bump{animation:lbump 1.6s ease-out}
+.try-it.busy{opacity:.6;cursor:progress}
+#live-toasts{position:fixed;right:20px;bottom:20px;display:flex;flex-direction:column;gap:8px;z-index:70;width:340px;pointer-events:none}
+.lt{pointer-events:auto;display:flex;gap:10px;align-items:flex-start;background:var(--p2);border:1px solid var(--ln2);border-radius:9px;padding:10px 12px;font-size:12.5px;box-shadow:0 12px 32px rgba(0,0,0,.55);animation:ltin .28s ease-out;transition:opacity .3s,transform .3s}
+.lt b{font-weight:500;display:block}.lt .lx{color:var(--t2);font-size:11.5px;margin-top:2px;line-height:1.45;word-break:break-word}
+.lt .li{width:7px;height:7px;border-radius:50%;margin-top:5px;flex:none;background:var(--g2);box-shadow:0 0 8px var(--g2)}
+.lt.warn{border-color:rgba(232,178,74,.35)}.lt.warn .li{background:var(--am);box-shadow:0 0 8px var(--am)}
+.lt.bad{border-color:rgba(240,106,106,.4)}.lt.bad .li{background:var(--rd);box-shadow:0 0 8px var(--rd)}
+.lt .lc{margin-left:auto;background:none;border:0;color:var(--t3);font-size:15px;line-height:1;cursor:pointer}
+.lt.out{opacity:0;transform:translateX(16px)}
+@keyframes ltin{0%{opacity:0;transform:translateY(8px)}100%{opacity:1;transform:none}}
+@media (prefers-reduced-motion: reduce){
+  .live-ind .ldot:after,.live-ind.connecting .ldot{animation:none}
+  .flash,.flash.mine{animation:none;background:rgba(43,212,154,.08)}
+  .kv.bump,.lt{animation:none}.lt{transition:none}
+}

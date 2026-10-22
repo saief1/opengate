@@ -152,7 +152,10 @@ func serve(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	srv, err := server.New(ctx, server.Options{Config: cfg, Store: st, Cipher: cipher, Pricing: prices, Logger: log, WebFS: web.FS()})
+	demo := os.Getenv("OPENGATE_DEMO_MOCK_LISTEN") != ""
+	traffic := demo && truthy(os.Getenv("OPENGATE_DEMO_TRAFFIC"))
+	srv, err := server.New(ctx, server.Options{Config: cfg, Store: st, Cipher: cipher, Pricing: prices, Logger: log, WebFS: web.FS(),
+		Demo: demo, DemoTraffic: traffic})
 	if err != nil {
 		return err
 	}
@@ -403,4 +406,12 @@ func healthcheck() error {
 		return fmt.Errorf("healthz returned %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func truthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }

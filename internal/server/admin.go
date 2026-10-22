@@ -25,6 +25,8 @@ func (s *Server) registerAdmin(mux *http.ServeMux) {
 	h("GET /admin/api/overview", s.adminOverview)
 	h("GET /admin/api/series", s.adminSeries)
 	h("GET /admin/api/alerts", s.adminAlerts)
+	h("GET /admin/api/stream", s.adminStream)
+	h("POST /admin/api/demo/try", s.adminDemoTry)
 	h("GET /admin/api/logs", s.adminLogs)
 	h("GET /admin/api/logs/{id}", s.adminLog)
 	h("GET /admin/api/projects", s.adminProjects)

@@ -65,6 +65,12 @@ fly secrets set OPENGATE_MASTER_KEY=... OPENGATE_ADMIN_TOKEN=...
 fly deploy --config deploy/fly.toml
 ```
 
+The public test site uses `deploy/fly-demo/` instead (mock providers, seeded by
+`scripts/fly-demo-seed.sh`). It sets `OPENGATE_DEMO_MOCK_LISTEN` (demo mode: `/public/live`,
+`/public/playground`, dashboard *Try it*) and `OPENGATE_DEMO_TRAFFIC=1` (in-process traffic generator, one
+request every 3-7s while the machine is running; demo rows kept 30 days, capped at 60k per table). Never set
+these on a real deployment.
+
 Keep one machine with SQLite (volumes are per machine). For more than one,
 attach Fly Postgres / a managed Postgres and set `OPENGATE_DATABASE`.
 

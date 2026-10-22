@@ -580,6 +580,43 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /admin/api/stream:
+    get:
+      tags:
+        - "Live"
+      summary: "Server-Sent Events feed of the caller's org: request log rows (bodies stripped), MCP calls, budget alerts, kill-switch changes and a spend tick every 10s"
+      operationId: "get_stream"
+      x-min-role: "viewer"
+      responses:
+        "200":
+          description: "text/event-stream with events hello, tick, request, mcp, alert and kill"
+        "401":
+          description: "Not authenticated"
+        "503":
+          description: "Too many concurrent streams; clients fall back to polling"
+  /admin/api/demo/try:
+    post:
+      tags:
+        - "Live"
+      summary: "Demo deployments only: send one test request through a demo virtual key and return its routing result"
+      operationId: "post_demo_try"
+      x-min-role: "member"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model:
+                  type: string
+                  default: "auto"
+                prompt:
+                  type: string
+      responses:
+        "200":
+          description: "Routing result (request_id, status, model, cost_usd, latency_ms, ...)"
+        "404":
+          description: "Not a demo deployment"
   /admin/api/alerts:
     get:
       tags:

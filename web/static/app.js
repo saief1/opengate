@@ -275,6 +275,7 @@ async function render() {
   $("root").replaceChildren(el("div", { class: "app" }, sidebar(r.page), el("div", { class: "main" }, topbar(crumb.length ? crumb : el("b", {}, TITLES[r.page]), actions), body)));
   window.scrollTo(0, 0);
   refreshChrome();
+  Live.ensure();
 }
 // Sidebar counters + health, loaded after the page so navigation stays fast.
 async function refreshChrome() {
@@ -338,7 +339,7 @@ function logTags(l) {
 const modelSub = (l) => (l.provider_model && l.provider + "/" + l.provider_model !== l.model ? "→ " + l.provider_model.split("/").pop() : "");
 function feedRow(l) {
   const who = [l.agent ? "agent/" + l.agent : "key/" + keyName(l.key_id), l.customer_id || null, l.prompt_tokens + l.completion_tokens ? num(l.prompt_tokens + l.completion_tokens) + " tok" : l.error_code || null].filter(Boolean).join(" · ");
-  return el("div", { class: "row", onclick: () => (location.hash = "#requests/" + l.id) }, el("span", { class: "t" }, hhmmss(l.ts)), el("span", { class: "md" }, l.model),
+  return el("div", { class: "row", "data-id": l.id, onclick: () => (location.hash = "#requests/" + l.id) }, el("span", { class: "t" }, hhmmss(l.ts)), el("span", { class: "md" }, l.model),
     el("span", { class: "st m " + (l.status < 400 ? "ok" : BLOCK_CODES.includes(l.error_code) ? "bk" : "rt") }, l.status < 400 ? `${l.status} · ${usd(l.cost_usd, 4)}` : `${l.status} · ${(ERR_LABEL[l.error_code] || l.error_code || "error").toLowerCase()}`),
     el("span", { class: "s" }, who));
 }
@@ -381,7 +382,7 @@ PAGES.overview = async (root, actions, crumb, r) => {
   const projLimits = S.limits.filter((l) => l.scope === "project" && l.monthly_usd > 0);
   const cap = projLimits.reduce((a, l) => a + l.monthly_usd, 0), capSpent = projLimits.reduce((a, l) => a + l.monthly_spent, 0);
   const anyKilled = S.projects.some((p) => p.killed);
-  actions.push(el("span", { class: "btn", style: { cursor: "default" } }, el("span", { class: "gdot" }), "Live"),
+  actions.push(liveIndicator(), tryItButton(),
     el("span", { class: "seg" }, RANGES.map(([v, l]) => el("button", { class: +v === hours ? "a" : "", onclick: () => setQuery({ h: v === "24" ? "" : v }) }, l))),
     can("member") ? el("a", { class: "btn k", href: "#policies" }, svgIconSmall("kill"), anyKilled ? "Kill switch · active" : "Kill switch") : null);
   const k = kpis([
@@ -410,7 +411,7 @@ PAGES.overview = async (root, actions, crumb, r) => {
     : empty("No routing rules yet", "Requests go to the model they ask for, with alias failover.", el("a", { class: "btn", href: "#policies" }, "Add a rule")), { right: rule ? el("span", { class: "st ok" }, "active") : null, sub: rule ? "priority " + rule.priority : "" });
   const feed = el("div", {}, liveCard("Live requests", logs.data));
   root.append(el("div", { class: "g split" }, el("div", { class: "g" }, k, chart, top), el("div", { class: "g" }, feed, policy)));
-  poller = setInterval(async () => { if (document.hidden || !$("modal").classList.contains("hidden")) return; const l = await soft("/logs?limit=11", null); if (l) feed.replaceChildren(liveCard("Live requests", l.data)); }, 5000);
+  poller = setInterval(async () => { if (Live.state === "live" || document.hidden || !$("modal").classList.contains("hidden")) return; const l = await soft("/logs?limit=11", null); if (l) feed.replaceChildren(liveCard("Live requests", l.data)); }, 5000);
 };
 function svgIconSmall(n) { const s = svgIcon(n); s.setAttribute("width", 13); s.setAttribute("height", 13); s.setAttribute("fill", "none"); s.setAttribute("stroke", "currentColor"); s.setAttribute("stroke-width", 2); return s; }
 
@@ -430,13 +431,13 @@ PAGES.requests = async (root, actions, crumb, r) => {
   if (view === "errors") params.set("errors", "1"); if (view === "guard") params.set("guard", "1");
   const [logs, ser] = await Promise.all([api("/logs?" + params), api("/series?hours=24&by=provider")]);
   const sm = ser.summary;
-  actions.push(el("span", { class: "btn", style: { cursor: "default" } }, el("span", { class: "gdot" }), "Live"), el("span", { class: "btn", style: { cursor: "default" } }, "Last 24h"));
+  actions.push(liveIndicator(), tryItButton(), el("span", { class: "btn", style: { cursor: "default" } }, "Last 24h"));
   const input = el("input", { class: "inp m", value: q, placeholder: "agent:planner model:openai/gpt-4o-mini customer:acme key:name project:name", style: { flex: 1, border: 0, background: "transparent", boxShadow: "none" } });
   const filterBar = el("form", { class: "card", style: { display: "flex", alignItems: "center", gap: "8px", padding: "4px 12px" }, onsubmit: (e) => { e.preventDefault(); setQuery({ q: input.value.trim(), p: "" }); } },
     el("span", { class: "m mut" }, "›"), input, el("span", { class: "kbd" }, "↵"));
   const exportCsv = () => download(`opengate-requests-${new Date().toISOString().slice(0, 10)}.csv`, toCSV([["id", "time", "project", "key", "agent", "customer", "model", "provider", "provider_model", "prompt_tokens", "completion_tokens", "cost_usd", "billed_usd", "latency_ms", "status", "error_code", "attempts", "route", "cache_hit", "guard"],
     ...logs.data.map((l) => [l.id, l.ts, projName(l.project_id), keyName(l.key_id), l.agent, l.customer_id, l.model, l.provider, l.provider_model, l.prompt_tokens, l.completion_tokens, l.cost_usd, l.billed_usd, l.latency_ms, l.status, l.error_code, l.attempts, l.route, l.cache_hit, l.guard])]));
-  const rows = logs.data.map((l) => el("tr", { class: "click", onclick: () => (location.hash = "#requests/" + l.id) },
+  const rows = logs.data.map((l) => el("tr", { class: "click", "data-id": l.id, onclick: () => (location.hash = "#requests/" + l.id) },
     el("td", { class: "m t2" }, l.id), el("td", { class: "m mut" }, hhmmss(l.ts)), el("td", {}, l.agent || el("span", { class: "mut" }, keyName(l.key_id))), el("td", {}, l.customer_id || el("span", { class: "mut" }, "—")),
     el("td", {}, modelChip(l.model, modelSub(l))), el("td", { class: "r m" }, l.prompt_tokens + l.completion_tokens ? `${num(l.prompt_tokens)} / ${num(l.completion_tokens)}` : "– / –"),
     el("td", { class: "r m" }, l.cost_usd ? usd(l.cost_usd, 4) : "–"), el("td", { class: "r m" }, l.latency_ms ? ms(l.latency_ms) : "–"), el("td", {}, statusTag(l)),
@@ -1204,7 +1205,7 @@ PAGES.mcp = async (root, actions, crumb, r) => {
     body = el("div", { class: "g" }, card("Tool policy", table(["Server", "Agent", "Tool", "Action", ">Limit", "Added", ""], rows, { empty: empty("No tool rules", (pol.default_deny ? "Default deny is on: every tool is blocked" : "Every tool is allowed") + " until you add rules. Typical setup: deny write tools (delete_*, push_*) for all agents, then allow them for one trusted agent.") }),
       { sub: pol.default_deny ? "default deny" : "default allow" }), card("Policy tester", tester, { sub: "dry run, no call is made" }));
   } else {
-    const rows = calls.data.map((c) => el("tr", {}, el("td", { class: "m mut" }, hhmmss(c.ts)), el("td", {}, c.agent), el("td", {}, c.server_name), el("td", { class: "m" }, c.tool || c.method),
+    const rows = calls.data.map((c) => el("tr", { "data-id": c.id }, el("td", { class: "m mut" }, hhmmss(c.ts)), el("td", {}, c.agent), el("td", {}, c.server_name), el("td", { class: "m" }, c.tool || c.method),
       el("td", { class: "m mut", style: { maxWidth: "320px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "11px" }, title: c.args }, c.args || "—", c.redacted ? [" ", st("vi", "redacted")] : null),
       el("td", { class: "r m" }, ms(c.latency_ms)), el("td", {}, c.error_code ? st(c.status >= 400 ? "bk" : "rt", ERR_LABEL[c.error_code] || c.error_code.replace(/_/g, " "), c.error_message) : st("ok", c.status))));
     const srvSel = el("select", { class: "inp", onchange: (e) => setQuery({ server: e.target.value }) }, el("option", { value: "" }, "All servers"), servers.map((x) => el("option", { value: x.id, selected: x.id === srvF }, x.name)));
@@ -1275,7 +1276,7 @@ async function boot() {
 }
 async function logout() {
   await api("/auth/logout", { method: "POST", quiet: true }).catch(() => {});
-  sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(ORG_KEY); showAuth("signin");
+  Live.stop(); sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(ORG_KEY); showAuth("signin");
 }
 window.addEventListener("hashchange", () => { if (/#invite=|#signup/.test(location.hash)) return boot(); if (document.querySelector(".app")) { closeModal(); render(); } });
-boot();
+window.addEventListener("DOMContentLoaded", boot);

@@ -72,7 +72,7 @@ func minRole(method, pattern string) string {
 	case "POST /admin/api/routing/preview", "POST /admin/api/guardrails/test", "POST /admin/api/mcp/check":
 		return store.RoleViewer // dry runs, no state change
 	case "POST /admin/api/keys", "POST /admin/api/keys/{id}/kill", "POST /admin/api/keys/{id}/unkill",
-		"POST /admin/api/projects/{id}/kill", "POST /admin/api/projects/{id}/unkill":
+		"POST /admin/api/projects/{id}/kill", "POST /admin/api/projects/{id}/unkill", "POST /admin/api/demo/try":
 		return store.RoleMember // members create keys and may always pull the kill switch
 	case "PATCH /admin/api/org", "DELETE /admin/api/members/{id}":
 		return store.RoleAdmin // further owner checks happen in the handlers
