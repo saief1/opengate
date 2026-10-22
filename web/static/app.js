@@ -1168,6 +1168,7 @@ PAGES.mcp = async (root, actions, crumb, r) => {
   const tab = r.q.get("tab") || "servers", srvF = r.q.get("server") || "";
   const [sv, pol, calls] = await Promise.all([api("/mcp/servers"), api("/mcp/policies"), api("/mcp/calls?limit=50" + (r.q.get("errors") ? "&errors=1" : "") + (srvF ? "&server_id=" + srvF : ""))]);
   const servers = sv.data, byId = Object.fromEntries(servers.map((x) => [x.id, x]));
+  actions.push(liveIndicator());
   if (can("admin")) actions.push(tab === "policies" && servers.length ? el("button", { class: "btn gr", onclick: () => mcpPolicyModal(servers, srvF) }, "+ Tool rule") : el("button", { class: "btn gr", onclick: () => mcpServerModal() }, "+ Add server"));
   const errs = calls.data.filter((c) => c.error_code).length;
   const lat = calls.data.filter((c) => !c.error_code).map((c) => c.latency_ms).sort((a, b) => a - b);
