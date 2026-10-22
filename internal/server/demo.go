@@ -403,7 +403,7 @@ func truncRunes(s string, n int) string {
 	return string(r[:n]) + "…"
 }
 
-var blockCodes = map[string]bool{"budget_exceeded": true, "key_killed": true, "project_killed": true, "killed": true, "killed_mid_stream": true,
+var blockCodes = map[string]bool{"budget_exceeded": true, "key_killed": true, "project_killed": true, "org_killed": true, "agent_killed": true, "customer_killed": true, "killed": true, "killed_mid_stream": true,
 	"rate_limit_exceeded": true, "model_not_allowed": true, "max_tokens_exceeded": true, "guardrail_blocked": true, "prompt_injection": true}
 
 func isBlockCode(c string) bool { return blockCodes[c] }

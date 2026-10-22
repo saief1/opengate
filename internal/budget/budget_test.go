@@ -45,7 +45,7 @@ func spend(t *testing.T, st *store.Store, e *Enforcer, scopes []Scope, cost floa
 
 func TestScopes(t *testing.T) {
 	_, _, scopes, _ := setup(t)
-	if len(scopes) != 3 || scopes[0].Kind != store.ScopeKey || scopes[1].Kind != store.ScopeAgent || scopes[2].Kind != store.ScopeProject {
+	if len(scopes) != 4 || scopes[0].Kind != store.ScopeKey || scopes[1].Kind != store.ScopeAgent || scopes[2].Kind != store.ScopeProject || scopes[3].Kind != store.ScopeOrg {
 		t.Fatalf("scopes: %+v", scopes)
 	}
 }

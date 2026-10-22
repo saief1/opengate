@@ -63,6 +63,7 @@ Types are `openai`, `anthropic`, `gemini` and `openrouter`. `timeout` limits tim
 |---|---|---|
 | `budgets.strict` | false | Refuse requests whose worst-case cost exceeds the remaining budget. |
 | `budgets.sync_interval` | 0 (SQLite) / 5s (Postgres) | How often committed spend is re-read from the DB. |
+| `budgets.org_daily_usd` / `budgets.org_monthly_usd` | 0 (none) | Default org-wide spend caps for orgs without their own cap (`PUT /admin/api/org/spend-cap`). Over-cap requests get 429 `budget_exceeded`. |
 | `rate_limit.backend` | `database` | `memory` is per process. |
 | `alerts.webhook_url` | — | `alerts.thresholds: [0.8, 1.0]`. |
 

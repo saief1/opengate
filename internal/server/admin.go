@@ -51,6 +51,7 @@ func (s *Server) registerAdmin(mux *http.ServeMux) {
 	h("POST /admin/api/pricing/reload", s.adminReloadPricing)
 	s.registerAdminPhase2(h)
 	s.registerAdminV3(h)
+	s.registerAdminControl(h)
 	s.registerAuth(mux, h)
 	s.registerCloud(mux, h)
 	mux.Handle("/admin/", s.adminAuth("GET /admin/", func(w http.ResponseWriter, r *http.Request) {

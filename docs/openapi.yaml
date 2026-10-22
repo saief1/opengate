@@ -19,6 +19,8 @@ tags:
   - name: "Projects"
   - name: "Guardrails"
   - name: "Keys"
+  - name: "Live"
+  - name: "Kill switch"
   - name: "Providers"
   - name: "Routing"
   - name: "Cache"
@@ -580,43 +582,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-  /admin/api/stream:
-    get:
-      tags:
-        - "Live"
-      summary: "Server-Sent Events feed of the caller's org: request log rows (bodies stripped), MCP calls, budget alerts, kill-switch changes and a spend tick every 10s"
-      operationId: "get_stream"
-      x-min-role: "viewer"
-      responses:
-        "200":
-          description: "text/event-stream with events hello, tick, request, mcp, alert and kill"
-        "401":
-          description: "Not authenticated"
-        "503":
-          description: "Too many concurrent streams; clients fall back to polling"
-  /admin/api/demo/try:
-    post:
-      tags:
-        - "Live"
-      summary: "Demo deployments only: send one test request through a demo virtual key and return its routing result"
-      operationId: "post_demo_try"
-      x-min-role: "member"
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                model:
-                  type: string
-                  default: "auto"
-                prompt:
-                  type: string
-      responses:
-        "200":
-          description: "Routing result (request_id, status, model, cost_usd, latency_ms, ...)"
-        "404":
-          description: "Not a demo deployment"
   /admin/api/alerts:
     get:
       tags:
@@ -2088,6 +2053,355 @@ paths:
       responses:
         "200":
           description: "OK"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/api/org/spend-cap:
+    get:
+      tags:
+        - "Budgets"
+      summary: "Optional org-wide daily/monthly spend cap, current spend and the sum of project caps"
+      operationId: "get_org_spend_cap"
+      x-min-role: "viewer"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgSpendCap"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      tags:
+        - "Budgets"
+      summary: "Set the org-wide cap (both 0 clears it). Over-cap requests get 429 budget_exceeded. Audit-logged."
+      operationId: "put_org_spend_cap"
+      x-min-role: "admin"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: "object"
+              properties:
+                daily_usd:
+                  type: "number"
+                monthly_usd:
+                  type: "number"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgSpendCap"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/api/stream:
+    get:
+      tags:
+        - "Live"
+      summary: "Server-Sent Events feed of the caller's org: request log rows (bodies stripped), MCP calls, budget alerts, kill-switch changes and a spend tick every 10s"
+      operationId: "get_stream"
+      x-min-role: "viewer"
+      responses:
+        "200":
+          description: "OK"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/api/demo/try:
+    post:
+      tags:
+        - "Live"
+      summary: "Demo deployments only: send one test request through a demo virtual key and return its routing result"
+      operationId: "post_demo_try"
+      x-min-role: "member"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: "object"
+              properties:
+                model:
+                  type: "string"
+                prompt:
+                  type: "string"
+      responses:
+        "200":
+          description: "OK"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/api/kill-switch:
+    get:
+      tags:
+        - "Kill switch"
+      summary: "Global, per-agent and per-customer kill switches plus kill history from the audit log"
+      operationId: "get_kill_switch"
+      x-min-role: "viewer"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: "object"
+                properties:
+                  global:
+                    type: "boolean"
+                  global_switch:
+                    $ref: "#/components/schemas/KillSwitch"
+                  switches:
+                    type: "array"
+                    items:
+                      $ref: "#/components/schemas/KillSwitch"
+                  history:
+                    type: "array"
+                    items:
+                      $ref: "#/components/schemas/AuditEntry"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      tags:
+        - "Kill switch"
+      summary: "Engage or release the global, agent (scope_id project_id/agent) or customer kill switch; aborts matching in-flight requests"
+      operationId: "post_kill_switch"
+      x-min-role: "member"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: "object"
+              properties:
+                scope:
+                  type: "string"
+                  enum:
+                    - "global"
+                    - "agent"
+                    - "customer"
+                scope_id:
+                  type: "string"
+                killed:
+                  type: "boolean"
+              required:
+                - "scope"
+                - "killed"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: "object"
+                properties:
+                  scope:
+                    type: "string"
+                  scope_id:
+                    type: "string"
+                  killed:
+                    type: "boolean"
+                  aborted_inflight:
+                    type: "integer"
+        "400":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: "Error"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: "Not found (also for other orgs' IDs)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/api/performance:
+    get:
+      tags:
+        - "Monitor"
+      summary: "Measured p50/p95 latency per serving model and success % per provider from request logs (?hours=24)"
+      operationId: "get_performance"
+      x-min-role: "viewer"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: "object"
+                properties:
+                  hours:
+                    type: "integer"
+                  models:
+                    type: "array"
+                    items:
+                      type: "object"
+                      properties:
+                        model:
+                          type: "string"
+                        p50_ms:
+                          type: "number"
+                        p95_ms:
+                          type: "number"
+                        requests:
+                          type: "integer"
+                  providers:
+                    type: "array"
+                    items:
+                      type: "object"
+                      properties:
+                        provider:
+                          type: "string"
+                        attempts:
+                          type: "integer"
+                        ok:
+                          type: "integer"
+                        success_pct:
+                          type: "number"
         "400":
           description: "Error"
           content:
@@ -4107,6 +4421,7 @@ components:
             - "key"
             - "agent"
             - "project"
+          description: "org caps are managed via /org/spend-cap"
         scope_id:
           type: "string"
         daily_usd:
@@ -4170,11 +4485,76 @@ components:
           type: "boolean"
         error:
           type: "string"
+        attempts:
+          type: "integer"
+        hops:
+          type: "array"
+          description: "Every upstream attempt in order (detail endpoint only)"
+          items:
+            $ref: "#/components/schemas/Hop"
         request_body:
           type: "string"
           description: "Only when the project logs bodies"
         response_body:
           type: "string"
+    Hop:
+      type: "object"
+      properties:
+        provider:
+          type: "string"
+        model:
+          type: "string"
+        status:
+          type: "integer"
+          description: "Provider HTTP status; 0 = no response"
+        latency_ms:
+          type: "integer"
+        error:
+          type: "string"
+        started_at:
+          type: "string"
+          format: "date-time"
+    KillSwitch:
+      type: "object"
+      properties:
+        scope:
+          type: "string"
+          enum:
+            - "global"
+            - "agent"
+            - "customer"
+        scope_id:
+          type: "string"
+        killed_at:
+          type: "string"
+          format: "date-time"
+        actor:
+          type: "string"
+    OrgSpendCap:
+      type: "object"
+      properties:
+        daily_usd:
+          type: "number"
+        monthly_usd:
+          type: "number"
+        source:
+          type: "string"
+          enum:
+            - "org"
+            - "config"
+            - ""
+          description: "org = set via API, config = server default, empty = no org cap"
+        daily_spent:
+          type: "number"
+        monthly_spent:
+          type: "number"
+        project_caps:
+          type: "object"
+          properties:
+            daily_usd:
+              type: "number"
+            monthly_usd:
+              type: "number"
     ProviderKey:
       type: "object"
       properties:
