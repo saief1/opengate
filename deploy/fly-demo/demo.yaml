@@ -1,0 +1,29 @@
+# Public test/demo deployment on Fly.io: every provider points at the
+# in-process mock (OPENGATE_DEMO_MOCK_LISTEN). No real API keys, Stripe off.
+# Secrets (OPENGATE_ADMIN_TOKEN, OPENGATE_MASTER_KEY) come from `fly secrets`.
+listen: 0.0.0.0:8080
+database: /data/opengate.db
+trust_proxy_headers: true
+trusted_proxies: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, fc00::/7]
+admin_lockout: {max_failures: 10, window: 5m, lockout: 15m}
+log: {level: info, format: json}
+providers:
+  openai:     {base_url: "http://127.0.0.1:9090/openai/v1"}
+  anthropic:  {base_url: "http://127.0.0.1:9090/anthropic"}
+  gemini:     {base_url: "http://127.0.0.1:9090/gemini"}
+  openrouter: {base_url: "http://127.0.0.1:9090/openrouter/v1"}
+routes:
+  smart: [openai/gpt-4o-fail, anthropic/claude-sonnet-4-5]
+  cheap: [openai/gpt-4o-mini, gemini/gemini-2.5-flash]
+retry: {max_attempts: 2, initial_backoff: 50ms, max_backoff: 500ms}
+smart_routing:
+  auto:
+    enabled: true
+    baseline: openai/gpt-4.1
+    models:
+      - {model: openai/gpt-4.1-nano, tier: 1}
+      - {model: gemini/gemini-2.5-flash, tier: 2}
+      - {model: anthropic/claude-sonnet-4-5, tier: 3}
+      - {model: openai/gpt-4.1, tier: 3}
+auth:
+  secure_cookies: true

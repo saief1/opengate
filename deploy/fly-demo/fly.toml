@@ -1,0 +1,40 @@
+# Public TEST deployment (https://opengate.fly.dev): mock providers, seeded
+# demo data, SQLite on a 1 GB volume, Stripe off. Not for production.
+#   fly deploy -c deploy/fly-demo/fly.toml   (run from the repo root)
+app = "opengate"
+primary_region = "yyz"
+
+[build]
+  dockerfile = "../../Dockerfile"
+
+[experimental]
+  cmd = ["serve", "-config", "/etc/opengate/demo.yaml"]
+
+[[files]]
+  guest_path = "/etc/opengate/demo.yaml"
+  local_path = "deploy/fly-demo/demo.yaml"
+
+[env]
+  OPENGATE_DEMO_MOCK_LISTEN = "127.0.0.1:9090"
+  OPENGATE_PUBLIC_URL = "https://opengate.fly.dev"
+
+[mounts]
+  source = "opengate_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[http_service.checks]]
+  path = "/readyz"
+  interval = "15s"
+  timeout = "3s"
+  grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

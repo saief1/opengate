@@ -157,6 +157,17 @@ func serve(args []string) error {
 		return err
 	}
 	go srv.Run(ctx)
+	if addr := os.Getenv("OPENGATE_DEMO_MOCK_LISTEN"); addr != "" {
+		// Demo/test deployments only: run the fake upstream in-process so a
+		// single container can serve seeded traffic without real API keys.
+		log.Warn("demo mode: in-process mock provider enabled", "listen", addr)
+		go func() {
+			hs := &http.Server{Addr: addr, Handler: mockprovider.New(mockprovider.Options{Jitter: 150 * time.Millisecond, ChunkDelay: 15 * time.Millisecond}), ReadHeaderTimeout: 10 * time.Second}
+			if err := hs.ListenAndServe(); err != nil {
+				log.Error("demo mock provider stopped", "err", err)
+			}
+		}()
+	}
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	go func() {
