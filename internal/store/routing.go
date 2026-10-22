@@ -176,12 +176,15 @@ func (s *Store) ListCustomerMeta(ctx context.Context, projectIDs []string) ([]*C
 // customers. Empty ProjectID/CustomerID/Model match anything; the most
 // specific matching rule wins.
 type MarkupRule struct {
-	ID         string    `json:"id"`
-	OrgID      string    `json:"org_id"`
-	ProjectID  string    `json:"project_id"`
-	CustomerID string    `json:"customer_id"`
-	Model      string    `json:"model"` // pattern, e.g. "openai/*"
-	MarkupPct  float64   `json:"markup_pct"`
+	ID         string  `json:"id"`
+	OrgID      string  `json:"org_id"`
+	ProjectID  string  `json:"project_id"`
+	CustomerID string  `json:"customer_id"`
+	Model      string  `json:"model"` // pattern, e.g. "openai/*"
+	MarkupPct  float64 `json:"markup_pct"`
+	// PerMTokUSD adds a flat fee per million tokens (prompt + completion)
+	// on top of the percentage markup.
+	PerMTokUSD float64   `json:"per_mtok_usd"`
 	CreatedAt  time.Time `json:"created_at"`
 }
 
@@ -190,18 +193,21 @@ func (s *Store) AddMarkupRule(ctx context.Context, m *MarkupRule) error {
 	if m.MarkupPct < -100 || m.MarkupPct > 100000 {
 		return errors.New("markup_pct must be between -100 and 100000")
 	}
+	if m.PerMTokUSD < 0 || m.PerMTokUSD > 10000 {
+		return errors.New("per_mtok_usd must be between 0 and 10000")
+	}
 	if m.OrgID == "" {
 		m.OrgID = DefaultOrgID
 	}
 	m.ID, m.CreatedAt = secure.RandomID("mk_"), time.Now().UTC()
-	_, err := s.exec(ctx, `INSERT INTO markup_rules(id,org_id,project_id,customer_id,model,markup_pct,created_at) VALUES(?,?,?,?,?,?,?)`,
-		m.ID, m.OrgID, m.ProjectID, strings.TrimSpace(m.CustomerID), strings.TrimSpace(m.Model), m.MarkupPct, ms(m.CreatedAt))
+	_, err := s.exec(ctx, `INSERT INTO markup_rules(id,org_id,project_id,customer_id,model,markup_pct,per_mtok_usd,created_at) VALUES(?,?,?,?,?,?,?,?)`,
+		m.ID, m.OrgID, m.ProjectID, strings.TrimSpace(m.CustomerID), strings.TrimSpace(m.Model), m.MarkupPct, m.PerMTokUSD, ms(m.CreatedAt))
 	return err
 }
 
 // ListMarkupRules lists an org's markup rules ("" = all).
 func (s *Store) ListMarkupRules(ctx context.Context, orgID string) ([]*MarkupRule, error) {
-	q, args := `SELECT id,org_id,project_id,customer_id,model,markup_pct,created_at FROM markup_rules`, []any{}
+	q, args := `SELECT id,org_id,project_id,customer_id,model,markup_pct,per_mtok_usd,created_at FROM markup_rules`, []any{}
 	if orgID != "" {
 		q, args = q+` WHERE org_id=?`, append(args, orgID)
 	}
@@ -214,7 +220,7 @@ func (s *Store) ListMarkupRules(ctx context.Context, orgID string) ([]*MarkupRul
 	for rows.Next() {
 		var m MarkupRule
 		var c int64
-		if err := rows.Scan(&m.ID, &m.OrgID, &m.ProjectID, &m.CustomerID, &m.Model, &m.MarkupPct, &c); err != nil {
+		if err := rows.Scan(&m.ID, &m.OrgID, &m.ProjectID, &m.CustomerID, &m.Model, &m.MarkupPct, &m.PerMTokUSD, &c); err != nil {
 			return nil, err
 		}
 		m.CreatedAt = fromMS(c)
@@ -306,10 +312,12 @@ WHERE project_id=? AND customer_id=? AND status<400 AND ts>? AND ts<=?`, project
 	return b.Float64, t.Int64, err
 }
 
-// AdvanceStripeSync moves a customer's cursor after a successful report.
-func (s *Store) AdvanceStripeSync(ctx context.Context, projectID, customerID string, to time.Time, remainder float64, value int64) error {
-	return s.execOne(ctx, `UPDATE stripe_sync SET synced_to=?, remainder=?, last_value=?, last_error='', updated_at=? WHERE project_id=? AND customer_id=?`,
-		ms(to), remainder, value, ms(time.Now()), projectID, customerID)
+// AdvanceStripeSync moves a customer's cursor from -> to after a successful
+// report. It is a compare-and-swap: ErrNotFound means the cursor is no
+// longer at from (another writer advanced it), and nothing changed.
+func (s *Store) AdvanceStripeSync(ctx context.Context, projectID, customerID string, from, to time.Time, remainder float64, value int64) error {
+	return s.execOne(ctx, `UPDATE stripe_sync SET synced_to=?, remainder=?, last_value=?, last_error='', updated_at=? WHERE project_id=? AND customer_id=? AND synced_to=?`,
+		ms(to), remainder, value, ms(time.Now()), projectID, customerID, ms(from))
 }
 
 // FailStripeSync records a sync error without moving the cursor.

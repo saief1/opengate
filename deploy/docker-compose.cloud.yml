@@ -1,0 +1,52 @@
+# OpenGate Cloud on one VM: Caddy (automatic HTTPS) -> OpenGate -> PostgreSQL.
+#   cp ../examples/env.cloud.example .env   # fill in every value
+#   docker compose -f docker-compose.cloud.yml up -d
+# Point DNS for $OPENGATE_DOMAIN at the VM first so Caddy can get a certificate.
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: opengate
+      POSTGRES_DB: opengate
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes: [pg-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opengate"]
+      interval: 5s
+      retries: 10
+
+  opengate:
+    image: ${OPENGATE_IMAGE:-ghcr.io/saief1/opengate:latest}
+    build: {context: .., dockerfile: Dockerfile}
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+    command: ["serve", "-config", "/etc/opengate/cloud.yaml"]
+    volumes: [./cloud.yaml:/etc/opengate/cloud.yaml:ro]
+    environment:
+      OPENGATE_DATABASE: postgres://opengate:${POSTGRES_PASSWORD}@postgres:5432/opengate?sslmode=disable  # private compose network
+      OPENGATE_PUBLIC_URL: https://${OPENGATE_DOMAIN:?set OPENGATE_DOMAIN}
+      OPENGATE_ADMIN_TOKEN: ${OPENGATE_ADMIN_TOKEN:?set OPENGATE_ADMIN_TOKEN}
+      OPENGATE_MASTER_KEY: ${OPENGATE_MASTER_KEY:?set OPENGATE_MASTER_KEY}
+      STRIPE_API_KEY: ${STRIPE_API_KEY:?set STRIPE_API_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:?set STRIPE_WEBHOOK_SECRET}
+      STRIPE_PRICE_TEAM: ${STRIPE_PRICE_TEAM:?set STRIPE_PRICE_TEAM}
+    expose: ["8080"]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [opengate]
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      OPENGATE_DOMAIN: ${OPENGATE_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  pg-data:
+  caddy-data:
+  caddy-config:

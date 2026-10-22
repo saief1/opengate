@@ -8,67 +8,15 @@
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
   <link rel="manifest" href="site.webmanifest">
-  <meta name="theme-color" content="#0B0D12">
+  <meta name="theme-color" content="#0A0A0B">
+  <link rel="preload" href="fonts/Geist.ttf" as="font" type="font/ttf" crossorigin>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div id="login" class="login hidden">
-    <div class="card login-card">
-      <div class="brand big"><img class="lockup" src="brand/opengate-lockup-dark.svg" alt="OpenGate" width="243" height="44"></div>
-      <div class="tabs" id="login-tabs">
-        <button type="button" class="tab active" data-mode="password">Email</button>
-        <button type="button" class="tab" data-mode="token">Admin token</button>
-        <button type="button" class="tab hidden" data-mode="signup" id="signup-tab">Sign up</button>
-      </div>
-      <form id="login-form" class="stack">
-        <div id="invite-banner" class="muted hidden"></div>
-        <input id="email" type="email" placeholder="Email" autocomplete="username">
-        <input id="name" type="text" placeholder="Your name" class="hidden" autocomplete="name">
-        <input id="org-name" type="text" placeholder="Organization name" class="hidden">
-        <input id="password" type="password" placeholder="Password" autocomplete="current-password">
-        <input id="token" type="password" placeholder="Admin token (OPENGATE_ADMIN_TOKEN)" class="hidden" autocomplete="off">
-        <button class="btn primary" type="submit" id="login-submit">Sign in</button>
-        <p class="muted small" id="login-hint">Accounts are invite-only. Operators can use the admin token; it stays in this tab's session storage.</p>
-        <p id="login-error" class="error"></p>
-      </form>
-    </div>
-  </div>
-  <div id="app" class="app hidden">
-    <aside class="sidebar">
-      <div class="brand"><img class="lockup" src="brand/opengate-lockup-dark.svg" alt="OpenGate" width="176" height="32"></div>
-      <select id="org-switch" class="org-switch hidden" aria-label="Organization"></select>
-      <nav id="nav">
-        <div class="nav-h">Monitor</div>
-        <a href="#overview" data-page="overview">Overview</a>
-        <a href="#logs" data-page="logs">Request logs</a>
-        <a href="#audit" data-page="audit">Audit log</a>
-        <div class="nav-h">Control</div>
-        <a href="#keys" data-page="keys">Virtual keys</a>
-        <a href="#projects" data-page="projects">Projects</a>
-        <a href="#budgets" data-page="budgets">Budgets</a>
-        <a href="#routing" data-page="routing">Smart routing</a>
-        <a href="#guardrails" data-page="guardrails">Guardrails</a>
-        <div class="nav-h">Business</div>
-        <a href="#customers" data-page="customers">Customers &amp; billing</a>
-        <a href="#providers" data-page="providers">Providers</a>
-        <a href="#team" data-page="team">Team</a>
-        <a href="#settings" data-page="settings">Settings</a>
-      </nav>
-      <div class="sidebar-foot">
-        <div><div id="whoami" class="muted ellipsis"></div><span id="version" class="muted"></span></div>
-        <button id="logout" class="btn ghost small">Sign out</button>
-      </div>
-    </aside>
-    <main>
-      <header class="topbar">
-        <h1 id="page-title">Overview</h1>
-        <div id="page-actions"></div>
-      </header>
-      <section id="page"></section>
-    </main>
-  </div>
-  <div id="modal" class="modal hidden"><div class="modal-body card" id="modal-body"></div></div>
+  <div id="root"></div>
+  <div id="modal" class="modal hidden"><div class="modal-body" id="modal-body"></div></div>
   <div id="toast" class="toast hidden"></div>
   <script src="app.js"></script>
+  <script src="live.js"></script>
 </body>
 </html>

@@ -1,0 +1,7 @@
+{$OPENGATE_DOMAIN} {
+	encode zstd gzip
+	# Streaming (SSE) responses must not be buffered.
+	reverse_proxy opengate:8080 {
+		flush_interval -1
+	}
+}

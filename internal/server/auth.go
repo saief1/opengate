@@ -33,6 +33,7 @@ type principal struct {
 	// audit details set by handlers
 	auditAction, auditTarget string
 	auditDetail              any
+	auditBefore, auditAfter  any
 }
 
 type principalKey struct{}
@@ -58,13 +59,20 @@ func (s *Server) audit(r *http.Request, action, target string, detail any) {
 	}
 }
 
+// auditChange is audit plus the before/after state of the changed object.
+func (s *Server) auditChange(r *http.Request, action, target string, before, after any) {
+	if p := principalOf(r); p != nil {
+		p.auditAction, p.auditTarget, p.auditBefore, p.auditAfter = action, target, before, after
+	}
+}
+
 // minRole returns the role an admin route requires.
 func minRole(method, pattern string) string {
 	switch pattern {
-	case "POST /admin/api/routing/preview", "POST /admin/api/guardrails/test":
+	case "POST /admin/api/routing/preview", "POST /admin/api/guardrails/test", "POST /admin/api/mcp/check":
 		return store.RoleViewer // dry runs, no state change
 	case "POST /admin/api/keys", "POST /admin/api/keys/{id}/kill", "POST /admin/api/keys/{id}/unkill",
-		"POST /admin/api/projects/{id}/kill", "POST /admin/api/projects/{id}/unkill":
+		"POST /admin/api/projects/{id}/kill", "POST /admin/api/projects/{id}/unkill", "POST /admin/api/demo/try":
 		return store.RoleMember // members create keys and may always pull the kill switch
 	case "PATCH /admin/api/org", "DELETE /admin/api/members/{id}":
 		return store.RoleAdmin // further owner checks happen in the handlers
@@ -232,6 +240,12 @@ func (s *Server) writeAudit(r *http.Request, p *principal, pattern string, statu
 	}
 	if p.auditDetail != nil {
 		a.Detail, _ = json.Marshal(p.auditDetail)
+	}
+	if p.auditBefore != nil {
+		a.Before, _ = json.Marshal(p.auditBefore)
+	}
+	if p.auditAfter != nil {
+		a.After, _ = json.Marshal(p.auditAfter)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

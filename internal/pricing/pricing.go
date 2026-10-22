@@ -168,6 +168,15 @@ func (t *Table) Models() []string {
 	return out
 }
 
+// Patterns returns the wildcard entries ("provider/prefix*") with their prices.
+func (t *Table) Patterns() map[string]Price {
+	out := make(map[string]Price, len(t.prefixes))
+	for _, e := range t.prefixes {
+		out[e.prefix+"*"] = e.price
+	}
+	return out
+}
+
 // Registry holds the current table and supports hot reloads.
 type Registry struct {
 	path string

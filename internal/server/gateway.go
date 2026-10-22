@@ -118,6 +118,7 @@ func (s *Server) finish(rs *reqState) {
 	}
 	rs.res.Commit(ctx, rs.log.CostUSD)
 	s.observe(rs.log)
+	s.publishLog(ctx, rs.log)
 }
 
 func (s *Server) reject(w http.ResponseWriter, rs *reqState, status int, typ, code, msg string, retryAfter time.Duration) {
@@ -173,6 +174,9 @@ func (s *Server) begin(w http.ResponseWriter, r *http.Request, endpoint string) 
 	}
 	if model == "" {
 		s.reject(w, rs, http.StatusBadRequest, "invalid_request_error", "invalid_request", "'model' is required.", 0)
+		return nil
+	}
+	if !s.cloudGate(w, rs) {
 		return nil
 	}
 	cust, err := s.customerID(r, key, proj, rs.raw)

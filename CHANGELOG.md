@@ -3,6 +3,93 @@
 All notable changes to OpenGate. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] (features-v3)
+
+### Live dashboard and demo site
+- `GET /admin/api/stream` (Server-Sent Events, same auth and roles as the admin API, scoped to the caller's org):
+  new request log rows (bodies stripped), MCP calls, budget alerts, kill-switch changes and a spend tick every 10s.
+- Dashboard subscribes (fetch-based, so admin-token sessions work too) and refreshes overview counters, charts,
+  request log, MCP call log, budgets and policies in place, highlights new rows, shows a pulsing *Live* indicator and
+  toasts for budget near/at limit, agent killed and tool denied; falls back to 5s polling when streaming fails.
+- Demo mode (only when `OPENGATE_DEMO_MOCK_LISTEN` is set): `OPENGATE_DEMO_TRAFFIC=1` runs an in-process traffic
+  generator through the gateway's own demo keys (normal calls, auto routing, failover, budget 429s, prompt-injection
+  block, PII redaction, Acme/Globex/Initech customers, allowed and denied MCP tool calls, a periodic kill-switch
+  cycle); its rows are pruned after 30 days and capped at 60k per table. Dashboard *Try it* button
+  (`POST /admin/api/demo/try`). Public, unauthenticated, rate-limited `GET /public/live` (sanitized aggregates and
+  recent rows) and `POST /public/playground` power a live counter strip, live request log and playground on the
+  landing page.
+
+### MCP tool gateway
+- `/mcp/{server}` proxies MCP (streamable HTTP and legacy HTTP+SSE) with the agent's virtual key: kill switch,
+  budgets and key rate limits apply to `tools/call`; per-agent allow/deny tool rules with wildcards (denied tools are
+  hidden from `tools/list`); per agent+tool rate limits; upstream secrets (server-wide or per agent) encrypted
+  server-side and never returned; every tool call logged with redacted arguments, status and latency.
+- Admin API `/admin/api/mcp/*` (servers, credentials, policies, dry-run check, call log); dashboard *MCP tools*
+  (servers, tool policy editor + tester, call log). See docs/mcp.md.
+
+### Audit log, roles, plans
+- Audit log is append-only (SQLite triggers / PostgreSQL trigger reject UPDATE and DELETE) and records `before` /
+  `after` state for key kill/revoke/policy/customer, project kill, limits, member roles, markups and MCP changes.
+- `GET /admin/api/audit` filters (actor, action prefix, target, since, until); `GET /admin/api/audit/export.csv`;
+  dashboard *Audit log* page with filters, before→after diff and CSV export.
+- Roles owner / admin / member / read-only (`viewer`; `read-only` accepted as an alias), enforced on every admin
+  route and reflected in the dashboard.
+- `plan` / `OPENGATE_PLAN`: self-hosted is unlocked by default; `free` gates the Team features (audit viewer and
+  export, member/read-only roles, customer billing writes) with HTTP 402 `plan_required`. Cloud orgs on the free
+  plan are gated; the operator token is not. `GET /admin/api/plan`.
+
+### Customer billing
+- Markup rules take `per_mtok_usd` (flat fee per million tokens) on top of the percentage; dashboard rule editor.
+
+### Production readiness
+- `.env.example`, `DEPLOY.md` (VPS, Fly.io, Render, why not Vercel, backups), GitHub Actions CI (gofmt, vet, tests on
+  SQLite and PostgreSQL, build, docker build + smoke test).
+- Optional CORS for `/v1` and `/mcp` (`cors_origins` / `OPENGATE_CORS_ORIGINS`); the admin API never sends CORS headers.
+- Live-mode Stripe keys are refused unless `OPENGATE_STRIPE_ALLOW_LIVE=true`.
+
+## [2.0.0-dev] (v2-dev)
+
+### Dashboard design v2
+
+- New dashboard (`/ui/`) built from the approved SaaS v2 design: near-black theme, Geist / Geist Mono (embedded, OFL),
+  Cursor-style sidebar with ⌘K jump-to, and 13 screens (overview, requests, request detail, keys, agents, customers,
+  budgets, policies & kill switch, providers, setup, team & settings, plan & billing, sign-in / sign-up). Every number
+  comes from the admin API; empty data shows an empty state instead of placeholders.
+- Landing page at `/ui/landing.html`. Pricing on it and on the billing page is labelled as a draft (`DRAFT_PLANS` /
+  `PRICING_DRAFT` in `web/static/app.js`; Cloud reads its plans from the config).
+- `GET /admin/api/series`: rolling-window summary, comparison with the previous window, p50/p95 latency and a spend
+  series grouped by provider, agent, key, customer, model or block reason (hour or day buckets).
+- `GET /admin/api/alerts`: whether budget alert webhooks are configured (host only) and the org's recent alerts.
+- `GET /admin/api/pricing` also returns wildcard `patterns`.
+
+### Stripe hardening (review of docs/stripe-integration-plan.md; verified live in Stripe test mode)
+
+- Meter sync reports fixed, epoch-aligned windows with deterministic identifiers, a compare-and-swap cursor and a
+  DB lease (`job_leases`). A lost response or a second replica can no longer double-bill (B1). New `billing.stripe.window`.
+- No duplicate subscriptions: one open Checkout per org (reused or expired), idempotency keys, adoption of a missed
+  subscription, cancellation of incomplete and duplicate subscriptions (A1).
+- `Stripe-Version: 2026-09-30.endive` pinned on every request (`api_version` override) (A2).
+- `charge.dispute.*`, `charge.refunded`, `radar.early_fraud_warning.created` are audited and alerted. A lost dispute
+  or an early fraud warning suspends paid limits until `POST /admin/api/billing/risk/clear` (A3).
+- Webhooks: a livemode mismatch is rejected (A10), and events are claimed atomically with a unique insert (A12).
+- Portal cancellations that set `cancel_at` (current API) are recognized. `cloud.stripe.portal_configuration`.
+- 14-day Team trial without a card (`trial_days`, `trial_without_card`), first subscription per org only.
+- Migration v7: `org_billing.checkout_session_id/checkout_plan/risk_status/risk_detail`, `stripe_events.state`, `job_leases`.
+
+### Added: OpenGate Cloud (hosted, multi-tenant mode)
+- `cloud:` config. Self-serve sign-up (per-IP throttle) and a plan catalog (Free / Team / Enterprise drafts) with monthly
+  request quotas, seat, project and orgs-per-user limits, and per-plan log retention.
+- Stripe Checkout (subscriptions), the Customer Portal, and signed and de-duplicated webhooks that re-fetch subscription
+  state. A past-due grace period, operator-assigned plans, and billing changes recorded in the audit log.
+- Dashboard: a "Plan & billing" page (usage meters, plan cards, upgrade/manage) and sign-up deep links (`#signup?plan=team`).
+- `opengate mock-stripe` (a fake Stripe with hosted checkout and portal pages that sends signed webhooks) and `make cloud-demo`.
+- Deploy templates: Docker Compose + Caddy, Fly.io, Render and Kubernetes (`deploy/`); see `docs/cloud.md`.
+- Migration v6 (`org_billing`, `org_usage`, `stripe_events`). Admin API: `GET /admin/api/billing`,
+  `POST /admin/api/billing/checkout`, `POST /admin/api/billing/portal`, `PUT /admin/api/billing/plan`; webhook `POST /cloud/stripe/webhook`.
+
+### Security
+- Cloud mode refuses to start with `share_env_provider_keys` or operator Stripe meter sync (tenant isolation).
+
 ## [1.0.1] - 2026-10-09
 
 ### Security

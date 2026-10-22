@@ -3,11 +3,13 @@ package billing
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -63,12 +65,16 @@ type fakeStripe struct {
 	mu     sync.Mutex
 	events []url.Values
 	fail   bool
+	lose   int // accept the next N events but answer 500 (lost response)
+	calls  int
 }
 
 func (f *fakeStripe) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if r.URL.Path != "/v1/billing/meter_events" || r.Header.Get("Authorization") != "Bearer sk_test_fake" {
+	f.calls++
+	if r.URL.Path != "/v1/billing/meter_events" || r.Header.Get("Authorization") != "Bearer sk_test_fake" ||
+		r.Header.Get("Stripe-Version") != config.StripeAPIVersion || r.Header.Get("Idempotency-Key") == "" {
 		http.Error(w, `{"error":{"message":"bad auth or path"}}`, 401)
 		return
 	}
@@ -86,6 +92,11 @@ func (f *fakeStripe) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	f.events = append(f.events, v)
+	if f.lose > 0 {
+		f.lose--
+		http.Error(w, `{"error":{"message":"connection reset"}}`, 502)
+		return
+	}
 	io.WriteString(w, `{"object":"billing.meter_event"}`)
 }
 
@@ -119,7 +130,7 @@ func TestStripeSyncAgainstMockServer(t *testing.T) {
 	fs := &fakeStripe{}
 	srv := httptest.NewServer(fs)
 	defer srv.Close()
-	cfg := config.StripeConfig{Enabled: true, BaseURL: srv.URL, EventName: "opengate_usage", Unit: "cents", Interval: time.Hour, Lag: time.Minute}
+	cfg := config.StripeConfig{Enabled: true, BaseURL: srv.URL, EventName: "opengate_usage", Unit: "cents", Interval: time.Hour, Lag: time.Minute, Window: time.Minute}
 	s := NewStripe(cfg, "sk_test_fake", st, srv.Client(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	now := start.Add(time.Hour)
 	s.now = func() time.Time { return now }
@@ -154,5 +165,139 @@ func TestStripeSyncAgainstMockServer(t *testing.T) {
 	states, _ := st.StripeSyncStates(ctx)
 	if len(states) != 1 || states[0].Remainder < 0.04 || states[0].Remainder > 0.06 || states[0].LastError != "" {
 		t.Fatalf("state %+v", states[0])
+	}
+}
+
+// setupMeter returns a store with one mapped customer whose cursor sits on a
+// window boundary, and a function to insert billed usage.
+func setupMeter(t *testing.T) (*store.Store, string, time.Time, func(at time.Time, usd float64)) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(storetest.DSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	p, _ := st.CreateProject(ctx, "app", false)
+	if err := st.UpsertCustomer(ctx, &store.Customer{ProjectID: p.ID, ID: "acme", StripeCustomerID: "cus_123"}); err != nil {
+		t.Fatal(err)
+	}
+	states, _ := st.StripeSyncStates(ctx)
+	base := states[0].SyncedTo
+	n := 0
+	return st, p.ID, base, func(at time.Time, usd float64) {
+		n++
+		l := &store.RequestLog{ID: fmt.Sprintf("req_%d", n), TS: at, ProjectID: p.ID, KeyID: "k", CustomerID: "acme", Status: 200, CostUSD: usd, BilledUSD: usd}
+		if err := st.InsertLog(ctx, l); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func sumValues(evs []url.Values) (total int64, ids map[string]int) {
+	ids = map[string]int{}
+	for _, e := range evs {
+		v, _ := strconv.ParseInt(e.Get("payload[value]"), 10, 64)
+		total += v
+		ids[e.Get("identifier")]++
+	}
+	return
+}
+
+// B1: a lost response must not double-report. The retry happens later (the
+// sync cutoff moved), yet it must resend the same window with the same
+// identifier, which Stripe de-duplicates.
+func TestStripeSyncLostResponseNoDoubleBilling(t *testing.T) {
+	ctx := context.Background()
+	st, _, base, ins := setupMeter(t)
+	ins(base.Add(10*time.Second), 0.50) // window 1
+	ins(base.Add(3*time.Minute), 0.25)  // a later window
+
+	fs := &fakeStripe{lose: 1}
+	srv := httptest.NewServer(fs)
+	defer srv.Close()
+	cfg := config.StripeConfig{Enabled: true, BaseURL: srv.URL, EventName: "u", Unit: "cents", Lag: time.Second, Window: time.Minute}
+	s := NewStripe(cfg, "sk_test_fake", st, srv.Client(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	now := base.Add(2 * time.Minute)
+	s.now = func() time.Time { return now }
+	if r := s.Sync(ctx); len(r.Errors) != 1 {
+		t.Fatalf("lost response should surface as an error: %+v", r)
+	}
+	// Much later: the cutoff now covers several more windows.
+	now = base.Add(30 * time.Minute)
+	if r := s.Sync(ctx); len(r.Errors) != 0 {
+		t.Fatalf("retry: %+v", r)
+	}
+	total, ids := sumValues(fs.events)
+	if total != 75 {
+		t.Fatalf("Stripe recorded %d cents, want 75 (events %v)", total, fs.events)
+	}
+	for id, n := range ids {
+		if n != 1 {
+			t.Fatalf("identifier %s recorded %d times", id, n)
+		}
+	}
+	if fs.calls != 3 { // first (lost), resend of the same window (dedup 400), second window
+		t.Fatalf("calls %d", fs.calls)
+	}
+}
+
+// B1: replicas syncing concurrently (separate processes sharing the
+// database) report each window once.
+func TestStripeSyncConcurrentReplicas(t *testing.T) {
+	ctx := context.Background()
+	st, _, base, ins := setupMeter(t)
+	want := int64(0)
+	for i := 0; i < 40; i++ {
+		ins(base.Add(time.Duration(i)*45*time.Second+time.Second), 0.10)
+		want += 10
+	}
+	fs := &fakeStripe{}
+	srv := httptest.NewServer(fs)
+	defer srv.Close()
+	cfg := config.StripeConfig{Enabled: true, BaseURL: srv.URL, EventName: "u", Unit: "cents", Lag: time.Second, Window: time.Minute}
+	now := base.Add(time.Hour)
+	var wg sync.WaitGroup
+	for r := 0; r < 4; r++ {
+		s := NewStripe(cfg, "sk_test_fake", st, srv.Client(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+		skew := time.Duration(r) * 7 * time.Second // replicas' clocks/cutoffs differ
+		s.now = func() time.Time { return now.Add(skew) }
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 5; i++ {
+				s.Sync(ctx)
+			}
+		}()
+	}
+	wg.Wait()
+	// Whatever is left (a replica may have skipped while another held the lease).
+	s := NewStripe(cfg, "sk_test_fake", st, srv.Client(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s.now = func() time.Time { return now }
+	s.Sync(ctx)
+	total, ids := sumValues(fs.events)
+	if total != want {
+		t.Fatalf("reported %d cents, want %d", total, want)
+	}
+	for id, n := range ids {
+		if n != 1 {
+			t.Fatalf("identifier %s sent %d times", id, n)
+		}
+	}
+}
+
+func TestWindowAfter(t *testing.T) {
+	w := time.Hour
+	b := time.Date(2026, 10, 9, 10, 0, 0, 0, time.UTC)
+	if got := windowAfter(b, w); !got.Equal(b.Add(time.Hour)) {
+		t.Fatalf("boundary: %v", got)
+	}
+	if got := windowAfter(b.Add(17*time.Minute), w); !got.Equal(b.Add(time.Hour)) {
+		t.Fatalf("inside: %v", got)
+	}
+	// Deterministic: the same cursor always yields the same window and id.
+	c := b.Add(17 * time.Minute)
+	if eventID("p", "c", c, windowAfter(c, w)) != eventID("p", "c", c, windowAfter(c, w)) {
+		t.Fatal("unstable identifier")
 	}
 }

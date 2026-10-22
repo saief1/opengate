@@ -147,3 +147,21 @@ func TestRebind(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestAuditLogAppendOnly(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	if err := s.InsertAudit(ctx, &AuditEntry{OrgID: DefaultOrgID, ActorType: "token", Action: "key.kill"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.exec(ctx, `UPDATE audit_log SET action='tampered'`); err == nil {
+		t.Fatal("UPDATE on audit_log must fail")
+	}
+	if _, err := s.exec(ctx, `DELETE FROM audit_log`); err == nil {
+		t.Fatal("DELETE on audit_log must fail")
+	}
+	rows, n, err := s.ListAudit(ctx, DefaultOrgID, 10, 0)
+	if err != nil || n != 1 || rows[0].Action != "key.kill" {
+		t.Fatalf("audit changed: %v %d %v", rows, n, err)
+	}
+}

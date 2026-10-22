@@ -59,16 +59,136 @@ type Config struct {
 	Billing      BillingConfig             `yaml:"billing"`
 	Cache        CacheConfig               `yaml:"cache"`
 	Auth         AuthConfig                `yaml:"auth"`
+	Cloud        CloudConfig               `yaml:"cloud"`
 	// ShareEnvProviderKeys lets every organization use provider keys from
 	// environment variables. Default false: env keys serve only the default
 	// org; other orgs must bring their own (stored encrypted).
 	ShareEnvProviderKeys bool `yaml:"share_env_provider_keys"`
+	// Plan gates the Team features (audit log viewer, roles, customer
+	// billing pass-through) on a self-hosted install: "" (default) or
+	// "team"/"enterprise" = unlocked; "free" = locked. In cloud mode each
+	// org's subscription decides instead. Env: OPENGATE_PLAN.
+	Plan string `yaml:"plan"`
+	// CORSOrigins lists browser origins allowed to call the gateway (/v1/*,
+	// /mcp/*) cross-origin. Empty (default) = no CORS headers at all. The
+	// admin API never sends CORS headers. Env: OPENGATE_CORS_ORIGINS (comma
+	// separated). "*" allows any origin (no credentials).
+	CORSOrigins []string  `yaml:"cors_origins"`
+	MCP         MCPConfig `yaml:"mcp"`
 
 	// Secrets are only ever read from the environment, never from YAML.
 	AdminToken   string `yaml:"-"`
 	MasterKey    string `yaml:"-"`
 	MetricsToken string `yaml:"-"` // OPENGATE_METRICS_TOKEN; falls back to the admin token
-	StripeAPIKey string `yaml:"-"` // STRIPE_API_KEY (only used when billing.stripe.enabled)
+	StripeAPIKey string `yaml:"-"` // STRIPE_API_KEY (billing.stripe meter sync, or cloud subscriptions)
+	// StripeWebhookSecret (STRIPE_WEBHOOK_SECRET, "whsec_...") verifies
+	// Stripe webhook signatures in cloud mode.
+	StripeWebhookSecret string `yaml:"-"`
+	// StripeAllowLive (OPENGATE_STRIPE_ALLOW_LIVE=true) permits live-mode
+	// Stripe keys. Off by default so a misplaced sk_live_ key can't charge
+	// real cards from a test deployment.
+	StripeAllowLive bool `yaml:"-"`
+}
+
+// MCPConfig configures the MCP (Model Context Protocol) tool gateway.
+type MCPConfig struct {
+	// Disabled turns off /mcp/{server} entirely.
+	Disabled bool `yaml:"disabled"`
+	// Timeout bounds one upstream MCP request (default 60s; SSE streams are
+	// bounded by StreamTimeout instead).
+	Timeout       time.Duration `yaml:"timeout"`
+	StreamTimeout time.Duration `yaml:"stream_timeout"` // default 10m
+	// ArgsLogMaxBytes caps logged (redacted) tool arguments (default 4096).
+	ArgsLogMaxBytes int `yaml:"args_log_max_bytes"`
+	// DefaultDeny makes tools without an explicit allow rule forbidden
+	// (default false: allowed unless denied).
+	DefaultDeny bool `yaml:"default_deny"`
+}
+
+// CloudConfig turns an install into a hosted, multi-tenant "OpenGate Cloud":
+// self-serve sign-up, per-org plans with quotas, and Stripe subscriptions
+// (Checkout, Customer Portal, webhooks).
+type CloudConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// PublicURL is the externally visible base URL (https://cloud.example.com);
+	// Stripe redirects back to it after Checkout and the portal.
+	PublicURL string `yaml:"public_url"`
+	// DefaultPlan is assigned to new orgs and to orgs whose subscription
+	// ended (default "free").
+	DefaultPlan string `yaml:"default_plan"`
+	// MaxOrgsPerUser caps how many orgs one user may own (default 3).
+	MaxOrgsPerUser int `yaml:"max_orgs_per_user"`
+	// GracePeriod keeps a past_due subscription on its paid plan while
+	// Stripe retries the payment (default 7 days).
+	GracePeriod time.Duration `yaml:"grace_period"`
+	// SalesURL is linked from "contact sales" plans (mailto: or https:).
+	SalesURL string `yaml:"sales_url"`
+	// Plans; defaults to DefaultCloudPlans() when empty.
+	Plans  []CloudPlan       `yaml:"plans"`
+	Stripe CloudStripeConfig `yaml:"stripe"`
+}
+
+// CloudPlan is one sellable plan. Limits of 0 mean unlimited.
+type CloudPlan struct {
+	ID               string   `yaml:"id" json:"id"`
+	Name             string   `yaml:"name" json:"name"`
+	PriceUSD         float64  `yaml:"price_usd" json:"price_usd"` // display only; Stripe's price is authoritative
+	Interval         string   `yaml:"interval" json:"interval"`   // display: "month"
+	StripePriceID    string   `yaml:"stripe_price_id" json:"-"`
+	ContactSales     bool     `yaml:"contact_sales" json:"contact_sales"` // not self-serve; set by the operator
+	MaxRequestsMonth int64    `yaml:"max_requests_month" json:"max_requests_month"`
+	MaxMembers       int      `yaml:"max_members" json:"max_members"`
+	MaxProjects      int      `yaml:"max_projects" json:"max_projects"`
+	LogRetentionDays int      `yaml:"log_retention_days" json:"log_retention_days"`
+	Features         []string `yaml:"features" json:"features"` // marketing bullets for the dashboard
+}
+
+// SelfServe reports whether the plan can be bought through Stripe Checkout.
+func (p CloudPlan) SelfServe() bool { return p.StripePriceID != "" && !p.ContactSales }
+
+// StripeAPIVersion is the Stripe API version OpenGate is built and tested
+// against. Every request pins it with the Stripe-Version header; webhook
+// endpoints should be created with the same version.
+const StripeAPIVersion = "2026-09-30.endive"
+
+// CloudStripeConfig configures Stripe subscriptions for cloud mode.
+type CloudStripeConfig struct {
+	BaseURL string `yaml:"base_url"` // default https://api.stripe.com
+	// APIVersion overrides the pinned Stripe-Version (default StripeAPIVersion).
+	APIVersion string `yaml:"api_version"`
+	// PortalConfiguration is the bpc_... Customer Portal configuration to
+	// use (default: the account's default configuration).
+	PortalConfiguration string `yaml:"portal_configuration"`
+	TrialDays           int    `yaml:"trial_days"`
+	// TrialWithoutCard lets a trial start without a payment method
+	// (payment_method_collection=if_required); a trial that ends with no
+	// card on file is canceled and the org returns to the default plan.
+	TrialWithoutCard    bool `yaml:"trial_without_card"`
+	AllowPromotionCodes bool `yaml:"allow_promotion_codes"`
+	AutomaticTax        bool `yaml:"automatic_tax"` // requires Stripe Tax to be set up
+}
+
+// DefaultCloudPlans is the draft plan catalog (prices are placeholders until
+// the Stripe prices exist; set stripe_price_id per plan).
+func DefaultCloudPlans() []CloudPlan {
+	return []CloudPlan{
+		{ID: "free", Name: "Free", Interval: "month", MaxRequestsMonth: 10_000, MaxMembers: 3, MaxProjects: 2, LogRetentionDays: 7,
+			Features: []string{"10k requests / month", "3 team members", "2 projects", "7-day request logs"}},
+		{ID: "team", Name: "Team", PriceUSD: 49, Interval: "month", MaxRequestsMonth: 1_000_000, MaxMembers: 25, LogRetentionDays: 30,
+			Features: []string{"1M requests / month", "25 team members", "Unlimited projects", "30-day request logs", "Email support"}},
+		{ID: "enterprise", Name: "Enterprise", Interval: "month", ContactSales: true, LogRetentionDays: 365,
+			Features: []string{"Unlimited requests", "SSO & custom contracts", "1-year request logs", "Priority support"}},
+	}
+}
+
+// Plan returns the plan with the given id.
+func (c *CloudConfig) Plan(id string) (CloudPlan, bool) {
+	for _, p := range c.Plans {
+		if p.ID == id {
+			return p, true
+		}
+	}
+	return CloudPlan{}, false
 }
 
 // SmartRoutingConfig configures the "auto" alias. Routing rules themselves
@@ -122,6 +242,12 @@ type StripeConfig struct {
 	// Lag excludes the most recent window so in-flight requests are
 	// logged before their window is reported (default 15m).
 	Lag time.Duration `yaml:"lag"`
+	// Window is the fixed reporting bucket (default 1h). Usage is reported
+	// per closed, epoch-aligned window with an identifier derived from the
+	// window, so retries and concurrent replicas can't double-report.
+	Window time.Duration `yaml:"window"`
+	// APIVersion pins the Stripe-Version header (default StripeAPIVersion).
+	APIVersion string `yaml:"api_version"`
 }
 
 // AuthConfig controls dashboard user accounts.
@@ -320,6 +446,20 @@ func (c *Config) applyEnv() {
 	set(&c.Log.Format, "OPENGATE_LOG_FORMAT")
 	set(&c.RateLimit.Backend, "OPENGATE_RATE_LIMIT_BACKEND")
 	set(&c.StripeAPIKey, "STRIPE_API_KEY")
+	set(&c.StripeWebhookSecret, "STRIPE_WEBHOOK_SECRET")
+	set(&c.Cloud.PublicURL, "OPENGATE_PUBLIC_URL")
+	set(&c.Plan, "OPENGATE_PLAN")
+	if v := os.Getenv("OPENGATE_STRIPE_ALLOW_LIVE"); v == "1" || strings.EqualFold(v, "true") {
+		c.StripeAllowLive = true
+	}
+	if v := os.Getenv("OPENGATE_CORS_ORIGINS"); v != "" {
+		c.CORSOrigins = nil
+		for _, o := range strings.Split(v, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				c.CORSOrigins = append(c.CORSOrigins, o)
+			}
+		}
+	}
 	if v := os.Getenv("OPENGATE_ALLOW_INSECURE_UPSTREAM"); v == "1" || strings.EqualFold(v, "true") {
 		c.AllowInsecureUpstream = true
 	}
@@ -343,6 +483,21 @@ func (c *Config) Normalize() error {
 	}
 	if c.MaxRequestBytes <= 0 {
 		c.MaxRequestBytes = 10 << 20
+	}
+	if c.MCP.Timeout <= 0 {
+		c.MCP.Timeout = 60 * time.Second
+	}
+	if c.MCP.StreamTimeout <= 0 {
+		c.MCP.StreamTimeout = 10 * time.Minute
+	}
+	if c.MCP.ArgsLogMaxBytes <= 0 {
+		c.MCP.ArgsLogMaxBytes = 4096
+	}
+	switch strings.ToLower(c.Plan) {
+	case "", "unlocked", "free", "team", "enterprise":
+		c.Plan = strings.ToLower(c.Plan)
+	default:
+		return fmt.Errorf("plan must be empty, free, team or enterprise (got %q)", c.Plan)
 	}
 	if c.BodyLogMaxBytes <= 0 {
 		c.BodyLogMaxBytes = 64 << 10
@@ -520,6 +675,15 @@ func (c *Config) normalizePhase2() error {
 	if st.Lag <= 0 {
 		st.Lag = 15 * time.Minute
 	}
+	if st.Window <= 0 {
+		st.Window = time.Hour
+	}
+	if st.Window < time.Second || (24*time.Hour)%st.Window != 0 {
+		return fmt.Errorf("billing.stripe.window: must be at least 1s and divide 24h evenly, got %s", st.Window)
+	}
+	if st.APIVersion == "" {
+		st.APIVersion = StripeAPIVersion
+	}
 	if c.Auth.SessionTTL <= 0 {
 		c.Auth.SessionTTL = 12 * time.Hour
 	}
@@ -528,6 +692,9 @@ func (c *Config) normalizePhase2() error {
 	}
 	if c.Auth.InviteTTL <= 0 {
 		c.Auth.InviteTTL = 7 * 24 * time.Hour
+	}
+	if err := c.normalizeCloud(); err != nil {
+		return err
 	}
 	if c.Cache.MaxTTL <= 0 {
 		c.Cache.MaxTTL = 24 * time.Hour
@@ -538,10 +705,102 @@ func (c *Config) normalizePhase2() error {
 	return nil
 }
 
-// ValidateStripe checks that Stripe sync has a key when enabled.
+// ValidateStripe checks that Stripe sync / cloud billing have their secrets.
 func (c *Config) ValidateStripe() error {
+	if (strings.HasPrefix(c.StripeAPIKey, "sk_live_") || strings.HasPrefix(c.StripeAPIKey, "rk_live_")) && !c.StripeAllowLive {
+		return errors.New("STRIPE_API_KEY is a live-mode key; OpenGate only accepts test-mode keys (sk_test_/rk_test_) unless OPENGATE_STRIPE_ALLOW_LIVE=true is set")
+	}
 	if c.Billing.Stripe.Enabled && c.StripeAPIKey == "" {
 		return errors.New("billing.stripe.enabled requires STRIPE_API_KEY in the environment")
+	}
+	if c.Cloud.Enabled {
+		if c.StripeAPIKey == "" {
+			return errors.New("cloud.enabled requires STRIPE_API_KEY in the environment")
+		}
+		if !strings.HasPrefix(c.StripeWebhookSecret, "whsec_") {
+			return errors.New("cloud.enabled requires STRIPE_WEBHOOK_SECRET (whsec_...) in the environment")
+		}
+	}
+	return nil
+}
+
+func (c *Config) normalizeCloud() error {
+	cc := &c.Cloud
+	if len(cc.Plans) == 0 {
+		cc.Plans = DefaultCloudPlans()
+	}
+	if cc.DefaultPlan == "" {
+		cc.DefaultPlan = "free"
+	}
+	if cc.MaxOrgsPerUser <= 0 {
+		cc.MaxOrgsPerUser = 3
+	}
+	if cc.GracePeriod <= 0 {
+		cc.GracePeriod = 7 * 24 * time.Hour
+	}
+	if cc.Stripe.BaseURL == "" {
+		cc.Stripe.BaseURL = "https://api.stripe.com"
+	}
+	if cc.Stripe.APIVersion == "" {
+		cc.Stripe.APIVersion = StripeAPIVersion
+	}
+	if p := cc.Stripe.PortalConfiguration; p != "" && !strings.HasPrefix(p, "bpc_") {
+		return fmt.Errorf("cloud.stripe.portal_configuration: want bpc_..., got %q", p)
+	}
+	cc.Stripe.BaseURL = strings.TrimRight(cc.Stripe.BaseURL, "/")
+	if !cc.Enabled {
+		return nil
+	}
+	seen, prices := map[string]bool{}, map[string]string{}
+	for _, p := range cc.Plans {
+		if p.ID == "" || p.Name == "" {
+			return errors.New("cloud.plans: every plan needs an id and a name")
+		}
+		if seen[p.ID] {
+			return fmt.Errorf("cloud.plans: duplicate plan id %q", p.ID)
+		}
+		seen[p.ID] = true
+		if p.StripePriceID != "" {
+			if other, dup := prices[p.StripePriceID]; dup {
+				return fmt.Errorf("cloud.plans: %q and %q share stripe_price_id %q", other, p.ID, p.StripePriceID)
+			}
+			prices[p.StripePriceID] = p.ID
+		}
+		if p.MaxRequestsMonth < 0 || p.MaxMembers < 0 || p.MaxProjects < 0 || p.LogRetentionDays < 0 {
+			return fmt.Errorf("cloud.plans: %q has a negative limit", p.ID)
+		}
+	}
+	def, ok := cc.Plan(cc.DefaultPlan)
+	if !ok {
+		return fmt.Errorf("cloud.default_plan %q is not in cloud.plans", cc.DefaultPlan)
+	}
+	if def.StripePriceID != "" {
+		return fmt.Errorf("cloud.default_plan %q must be free (no stripe_price_id)", cc.DefaultPlan)
+	}
+	if cc.PublicURL == "" {
+		return errors.New("cloud.public_url (or OPENGATE_PUBLIC_URL) is required in cloud mode")
+	}
+	cc.PublicURL = strings.TrimRight(cc.PublicURL, "/")
+	if err := c.checkURL(cc.PublicURL); err != nil {
+		return fmt.Errorf("cloud.public_url: %w", err)
+	}
+	if err := c.checkURL(cc.Stripe.BaseURL); err != nil {
+		return fmt.Errorf("cloud.stripe.base_url: %w", err)
+	}
+	if cc.SalesURL != "" && !strings.HasPrefix(cc.SalesURL, "mailto:") && !strings.HasPrefix(cc.SalesURL, "https://") {
+		return errors.New("cloud.sales_url must be a mailto: or https:// URL")
+	}
+	// Tenant isolation: cloud tenants must never spend the operator's
+	// provider keys or report usage into the operator's Stripe account.
+	if c.ShareEnvProviderKeys {
+		return errors.New("cloud.enabled cannot be combined with share_env_provider_keys (tenants would spend the operator's provider keys)")
+	}
+	if c.Billing.Stripe.Enabled {
+		return errors.New("cloud.enabled cannot be combined with billing.stripe (tenant usage would be metered into the operator's Stripe account)")
+	}
+	c.Auth.AllowSignup = true
+	if strings.HasPrefix(cc.PublicURL, "https://") {
+		c.Auth.SecureCookies = true
 	}
 	return nil
 }

@@ -20,7 +20,12 @@ Send `SIGHUP` to reload the price table.
 | `OPENGATE_PROVIDER_<NAME>_BASE_URL` | Override a provider's base URL. |
 | `OPENGATE_ALLOW_INSECURE_UPSTREAM` | `true` = same as `allow_insecure_upstream` (e.g. the compose mock). |
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY` | Provider keys for the default org (or store them in the dashboard). |
-| `STRIPE_API_KEY` | Only with `billing.stripe.enabled`. |
+| `STRIPE_API_KEY` | With `billing.stripe.enabled` (your customers' metering) **or** `cloud.enabled` (subscriptions); never both. |
+| `STRIPE_WEBHOOK_SECRET` | Cloud mode: `whsec_...` signing secret of the webhook endpoint. |
+| `OPENGATE_PUBLIC_URL` | Cloud mode: external `https://` base URL (Stripe redirects back here). |
+| `OPENGATE_PLAN` | Empty (default, everything unlocked) / `team` / `enterprise`, or `free` to gate Team features. |
+| `OPENGATE_CORS_ORIGINS` | Comma-separated origins allowed to call `/v1` and `/mcp` from browsers (`*` = any). Empty = no CORS. |
+| `OPENGATE_STRIPE_ALLOW_LIVE` | `true` to accept live-mode Stripe keys (refused by default). |
 | `OPENGATE_NEW_PASSWORD` | Read by `opengate create-user` instead of stdin. |
 
 ## Top level
@@ -110,8 +115,49 @@ guardrails: {pii: off, categories: [], responses: false, injection: off}   # pii
 billing:
   customer_header: X-OpenGate-Customer   # honored only for projects with trust_customer_header, or keys bound to a customer
   ignore_user_field: false
-  stripe: {enabled: false, event_name: opengate_usage, unit: cents, interval: 1h, lag: 15m, base_url: https://api.stripe.com}
+  stripe: {enabled: false, event_name: opengate_usage, unit: cents, interval: 1h, lag: 15m, base_url: https://api.stripe.com,
+           window: 1h,          # fixed, epoch-aligned reporting window (>= 1s, divides 24h); one meter event per customer per window
+           api_version: ""}     # default: the pinned Stripe-Version (2026-09-30.endive)
 ```
+
+## `cloud` (hosted, multi-tenant mode; see [cloud.md](cloud.md))
+
+```yaml
+cloud:
+  enabled: false
+  public_url: https://cloud.example.com   # or OPENGATE_PUBLIC_URL; https required (loopback http allowed)
+  default_plan: free                      # must have no stripe_price_id
+  max_orgs_per_user: 3
+  grace_period: 168h                      # past_due keeps the paid plan this long
+  sales_url: "mailto:sales@example.com"   # linked from contact_sales plans
+  stripe:
+    base_url: https://api.stripe.com
+    api_version: ""                       # default: pinned 2026-09-30.endive (sent as Stripe-Version on every call)
+    portal_configuration: ""              # bpc_... Customer Portal configuration (default: the account default)
+    trial_days: 14                        # first subscription per org only; 0 = no trial
+    trial_without_card: true              # payment_method_collection=if_required; trial ends -> canceled if no card
+    allow_promotion_codes: false
+    automatic_tax: false                  # only after a Stripe Tax registration exists
+  plans:                                  # default: Free / Team / Enterprise (draft)
+    - {id: team, name: Team, price_usd: 49, interval: month, stripe_price_id: "${STRIPE_PRICE_TEAM}",
+       max_requests_month: 1000000, max_members: 25, max_projects: 0, log_retention_days: 30, features: ["..."]}
+```
+
+Limits of `0` mean unlimited. Enabling cloud mode turns on `auth.allow_signup`, and also `auth.secure_cookies` for an https
+`public_url`. It **refuses to start** with `share_env_provider_keys` or `billing.stripe.enabled`, because tenants
+must never spend the operator's provider keys or be metered into the operator's Stripe account. It needs
+`STRIPE_API_KEY` and `STRIPE_WEBHOOK_SECRET`.
+
+## `mcp`
+
+MCP tool gateway; see [mcp.md](mcp.md). Keys: `disabled`, `timeout` (60s), `stream_timeout` (10m),
+`args_log_max_bytes` (4096), `default_deny` (false).
+
+## `plan`, `cors_origins`
+
+`plan: free` gates the Team features (audit log viewer/export, member and read-only roles, markup and Stripe sync
+writes) with HTTP 402. Empty (the default) leaves a self-hosted install fully unlocked. In cloud mode the org's
+subscription decides (any non-free plan is unlocked). `cors_origins` lists browser origins for `/v1` and `/mcp`.
 
 ## `cache`
 

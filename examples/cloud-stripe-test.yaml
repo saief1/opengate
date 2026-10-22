@@ -1,0 +1,43 @@
+# OpenGate Cloud against REAL Stripe test mode (sandbox "Opengate AI sandbox").
+# Secrets come from the environment only:
+#   STRIPE_API_KEY         sk_test_... / rk_test_... of the sandbox (never commit)
+#   STRIPE_WEBHOOK_SECRET  whsec_... printed by `stripe listen --print-secret`
+#   OPENGATE_DATABASE      postgres://... (or a SQLite path)
+# See docs/stripe-test-setup.md for the objects referenced below.
+listen: 127.0.0.1:8080
+providers:
+  openai:     {base_url: "http://127.0.0.1:9090/openai/v1"}
+  anthropic:  {base_url: "http://127.0.0.1:9090/anthropic"}
+  gemini:     {base_url: "http://127.0.0.1:9090/gemini"}
+  openrouter: {base_url: "http://127.0.0.1:9090/openrouter/v1"}
+cloud:
+  enabled: true
+  public_url: http://127.0.0.1:8080
+  sales_url: "mailto:sales@example.com"
+  stripe:
+    base_url: https://api.stripe.com
+    portal_configuration: bpc_1UOmlYK91DirmFuMbxb3vDLb
+    trial_days: 0              # set 14 + trial_without_card: true for the launch default
+    trial_without_card: true
+  plans:
+    - id: free
+      name: Free
+      max_requests_month: 50
+      max_members: 3
+      max_projects: 2
+      log_retention_days: 7
+      features: ["50 requests / month (test)", "3 team members", "2 projects", "7-day request logs"]
+    - id: team
+      name: Team
+      price_usd: 49
+      interval: month
+      stripe_price_id: price_1UOmlPK91DirmFuMAJvbYeg4   # lookup_key opengate_team_monthly
+      max_requests_month: 1000000
+      max_members: 25
+      log_retention_days: 30
+      features: ["1M requests / month", "25 team members", "Unlimited projects", "30-day request logs", "Email support"]
+    - id: enterprise
+      name: Enterprise
+      contact_sales: true
+      log_retention_days: 365
+      features: ["Unlimited requests", "SSO & custom contracts", "1-year request logs", "Priority support"]

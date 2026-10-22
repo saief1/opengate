@@ -52,6 +52,9 @@ type Options struct {
 	Sleep   func(ctx context.Context, d time.Duration) error // for tests
 	// StripeClient overrides the HTTP client used for Stripe (tests).
 	StripeClient *http.Client
+	// Demo enables the public test-site features (/public/*, dashboard
+	// "Try it"); DemoTraffic additionally runs the traffic generator.
+	Demo, DemoTraffic bool
 }
 
 // Server is the OpenGate HTTP application.
@@ -74,6 +77,7 @@ type Server struct {
 	markups      *billing.Markups
 	routingRules *ttlCache[[]*store.RoutingRule]
 	stripe       *billing.Stripe // nil unless billing.stripe.enabled
+	cloud        *cloudState     // nil unless cloud.enabled
 
 	trusted    []*net.IPNet  // trusted_proxies
 	active     atomic.Int64  // requests in the gateway (max_inflight)
@@ -81,8 +85,15 @@ type Server struct {
 	sprayMu    sync.Mutex
 	sprayCount map[string]int
 
+	mcpRates  budget.RateStore // per agent+tool MCP rate limits
+	mcpClient *http.Client
+
 	keyMu    sync.Mutex
 	keyCache map[string]string // provider name -> decrypted API key ("" = none)
+
+	hub     *liveHub
+	projOrg sync.Map   // project id -> org id (live stream routing)
+	demo    *demoState // nil unless Options.Demo
 }
 
 // New builds a Server.
@@ -119,6 +130,14 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	if o.Config.TrustProxyHeaders && len(o.Config.TrustedProxies) == 0 {
 		s.log.Warn("trust_proxy_headers is on without trusted_proxies: only the rightmost X-Forwarded-For hop is used; set trusted_proxies to your proxy CIDRs")
 	}
+	s.mcpRates = rates
+	s.hub = newLiveHub()
+	o.Alerter.Listen(s.onAlert)
+	if o.Demo {
+		s.demo = newDemoState(o.DemoTraffic)
+	}
+	s.mcpClient = &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone(),
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	s.sprayCount = map[string]int{}
 	s.pwSem = make(chan struct{}, 2*runtime.NumCPU())
 	for _, c := range o.Config.TrustedProxies {
@@ -132,6 +151,12 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	s.routingRules = &ttlCache[[]*store.RoutingRule]{ttl: 5 * time.Second, load: func(ctx context.Context) ([]*store.RoutingRule, error) {
 		return o.Store.ListRoutingRules(ctx, "")
 	}}
+	if o.Config.Cloud.Enabled {
+		if err := o.Config.ValidateStripe(); err != nil {
+			return nil, err
+		}
+		s.cloud = newCloudState(o.Config, o.StripeClient)
+	}
 	if o.Config.Billing.Stripe.Enabled {
 		if err := o.Config.ValidateStripe(); err != nil {
 			return nil, err
@@ -162,12 +187,25 @@ func (s *Server) Run(ctx context.Context) {
 	// replica's in-flight streams within one poll interval.
 	kt := time.NewTicker(2 * time.Second)
 	defer kt.Stop()
+	ht := time.NewTicker(time.Hour)
+	defer ht.Stop()
+	if s.cloud != nil {
+		s.pruneCloud(ctx)
+	}
+	if s.demo != nil {
+		go s.runDemo(ctx)
+	}
 	for {
 		select {
 		case <-ctx.Done():
+			s.hub.close()
 			return
 		case <-kt.C:
 			s.SweepKills(ctx)
+		case <-ht.C:
+			if s.cloud != nil {
+				s.pruneCloud(ctx)
+			}
 		case <-t.C:
 			if err := s.store.PruneRateBuckets(ctx, time.Now().Add(-10*time.Minute)); err != nil {
 				s.log.Warn("prune rate buckets", "err", err)
@@ -217,6 +255,16 @@ func (s *Server) Handler() http.Handler {
 	if !s.cfg.Metrics.Disabled {
 		mux.HandleFunc("GET /metrics", s.handleMetrics)
 	}
+	if !s.cfg.MCP.Disabled {
+		mux.HandleFunc("POST /mcp/{server}", s.limitInflight(s.handleMCP))
+		mux.HandleFunc("GET /mcp/{server}", s.handleMCP)
+		mux.HandleFunc("DELETE /mcp/{server}", s.handleMCP)
+		mux.HandleFunc("POST /mcp/{server}/{rest...}", s.limitInflight(s.handleMCP))
+	}
+	if s.demo != nil {
+		mux.HandleFunc("GET /public/live", s.publicLive)
+		mux.HandleFunc("POST /public/playground", s.publicPlayground)
+	}
 	s.registerAdmin(mux)
 	if s.webFS != nil && !s.cfg.DisableDashboard {
 		files := http.FileServerFS(s.webFS)
@@ -230,7 +278,7 @@ func (s *Server) Handler() http.Handler {
 			http.Redirect(w, r, "/ui/", http.StatusFound)
 		})
 	}
-	return s.recoverer(s.accessLog(commonHeaders(mux)))
+	return s.recoverer(s.accessLog(commonHeaders(s.cors(mux))))
 }
 
 func commonHeaders(next http.Handler) http.Handler {
@@ -288,6 +336,9 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 		rec := &statusRecorder{ResponseWriter: w}
 		next.ServeHTTP(rec, r)
 		p := r.URL.Path
+		if r.Context().Value(demoCtxKey{}) != nil {
+			return
+		}
 		if strings.HasPrefix(p, "/ui/") || p == "/healthz" || p == "/livez" || p == "/readyz" || p == "/metrics" {
 			return
 		}

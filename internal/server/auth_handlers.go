@@ -43,13 +43,12 @@ func (s *Server) registerAuth(mux *http.ServeMux, h func(string, http.HandlerFun
 	h("GET /admin/api/invites", s.adminInvites)
 	h("POST /admin/api/invites", s.adminCreateInvite)
 	h("DELETE /admin/api/invites/{id}", s.adminRevokeInvite)
-	h("GET /admin/api/audit", s.adminAudit)
 	h("GET /admin/api/settings", s.adminSettings)
 }
 
 func (s *Server) authConfig(w http.ResponseWriter, r *http.Request) {
 	n, _ := s.store.CountUsers(r.Context())
-	writeJSON(w, 200, map[string]any{"allow_signup": s.cfg.Auth.AllowSignup, "has_users": n > 0, "version": Version})
+	writeJSON(w, 200, map[string]any{"allow_signup": s.cfg.Auth.AllowSignup, "has_users": n > 0, "version": Version, "cloud": s.cloud != nil})
 }
 
 // startSession creates a session in org and sets the cookie.
@@ -266,6 +265,10 @@ func (s *Server) authAcceptInvite(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	cur, curErr := s.store.MemberRole(r.Context(), inv.OrgID, u.ID)
+	if curErr != nil && !s.seatAvailable(w, r, inv.OrgID) {
+		return
+	}
 	if err := s.store.AcceptInvite(r.Context(), inv.ID); err != nil {
 		writeError(w, http.StatusConflict, "invalid_request_error", "invite_invalid", "This invite was already used.")
 		return
@@ -274,7 +277,7 @@ func (s *Server) authAcceptInvite(w http.ResponseWriter, r *http.Request) {
 	// higher of the current and invited roles (so the last owner can't be
 	// demoted by accepting a lower-role invite).
 	role := inv.Role
-	if cur, err := s.store.MemberRole(r.Context(), inv.OrgID, u.ID); err == nil && store.RoleRank(cur) >= store.RoleRank(inv.Role) {
+	if curErr == nil && store.RoleRank(cur) >= store.RoleRank(inv.Role) {
 		role = cur
 	} else if err := s.store.AddMember(r.Context(), inv.OrgID, u.ID, inv.Role); err != nil {
 		storeErr(w, err)
@@ -343,6 +346,11 @@ func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
 	if err := s.startSession(w, r, u, o.ID); err != nil {
 		storeErr(w, err)
 		return
+	}
+	if s.cloud != nil {
+		// Throttle account creation per IP (admin_lockout thresholds): a
+		// burst of sign-ups from one address locks further sign-ups for a while.
+		s.lockout.fail("signup|" + s.clientIP(r))
 	}
 	s.auditSystem(r, o.ID, u, "auth.signup", 201, nil)
 	writeJSON(w, http.StatusCreated, map[string]any{"user": u, "org": o})
@@ -417,6 +425,9 @@ func (s *Server) adminCreateOrg(w http.ResponseWriter, r *http.Request) {
 		bad(w, err)
 		return
 	}
+	if p.Kind == "user" && !s.orgCreationAllowed(w, r, p.User.ID) {
+		return
+	}
 	o, err := s.store.CreateOrg(r.Context(), in.Name)
 	if err != nil {
 		bad(w, err)
@@ -486,13 +497,18 @@ func (s *Server) adminPatchMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid := r.PathValue("id")
+	in.Role = store.NormalizeRole(in.Role)
 	cur, err := s.store.MemberRole(r.Context(), orgID(r), uid)
 	if err != nil || cur == "" {
 		writeError(w, http.StatusNotFound, "invalid_request_error", "not_found", "member not found")
 		return
 	}
 	if store.RoleRank(in.Role) == 0 {
-		bad(w, errors.New("role must be owner, admin, member or viewer"))
+		bad(w, errors.New("role must be owner, admin, member or read-only (viewer)"))
+		return
+	}
+	if !s.planAllows(r, FeatureRoles) && (in.Role == store.RoleMember || in.Role == store.RoleViewer) {
+		planRequired(w, FeatureRoles)
 		return
 	}
 	if !canManage(p, cur) || !canManage(p, in.Role) {
@@ -509,7 +525,7 @@ func (s *Server) adminPatchMember(w http.ResponseWriter, r *http.Request) {
 		storeErr(w, err)
 		return
 	}
-	s.audit(r, "member.role", uid, map[string]string{"from": cur, "to": in.Role})
+	s.auditChange(r, "member.role", uid, map[string]string{"role": cur}, map[string]string{"role": in.Role})
 	writeJSON(w, 200, map[string]string{"user_id": uid, "role": in.Role})
 }
 
@@ -558,8 +574,20 @@ func (s *Server) adminCreateInvite(w http.ResponseWriter, r *http.Request) {
 		bad(w, err)
 		return
 	}
+	in.Role = store.NormalizeRole(in.Role)
+	rolesOn := s.planAllows(r, FeatureRoles)
+	if in.Role == "" && !rolesOn {
+		in.Role = store.RoleAdmin // without Team roles everyone is an admin
+	}
+	if !rolesOn && (in.Role == store.RoleMember || in.Role == store.RoleViewer) {
+		planRequired(w, FeatureRoles)
+		return
+	}
 	if in.Role == "" {
 		in.Role = store.RoleMember
+	}
+	if !s.planLimit(w, r, orgID(r), "members") {
+		return
 	}
 	if store.RoleRank(in.Role) == 0 {
 		bad(w, errors.New("role must be owner, admin, member or viewer"))
@@ -592,17 +620,6 @@ func (s *Server) adminRevokeInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(r, "invite.revoke", r.PathValue("id"), nil)
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) adminAudit(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	limit, offset := atoiDefault(q.Get("limit"), 100), atoiDefault(q.Get("offset"), 0)
-	rows, total, err := s.store.ListAudit(r.Context(), orgID(r), limit, offset)
-	if err != nil {
-		storeErr(w, err)
-		return
-	}
-	writeJSON(w, 200, map[string]any{"data": rows, "total": total})
 }
 
 func atoiDefault(s string, d int) int {

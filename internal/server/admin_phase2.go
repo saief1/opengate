@@ -34,11 +34,11 @@ func (s *Server) registerAdminPhase2(h func(string, http.HandlerFunc)) {
 	h("GET /admin/api/customers", s.adminCustomers)
 	h("PUT /admin/api/customers/{project}/{id}", s.adminPutCustomer)
 	h("GET /admin/api/billing/markups", s.adminMarkups)
-	h("POST /admin/api/billing/markups", s.adminAddMarkup)
+	h("POST /admin/api/billing/markups", s.gated(FeatureCustomerBilling, s.adminAddMarkup))
 	h("DELETE /admin/api/billing/markups/{id}", s.adminDeleteMarkup)
 	h("GET /admin/api/billing/export.csv", s.adminExportCSV)
 	h("GET /admin/api/billing/stripe", s.adminStripeStatus)
-	h("POST /admin/api/billing/stripe/sync", s.adminStripeSync)
+	h("POST /admin/api/billing/stripe/sync", s.gated(FeatureCustomerBilling, s.adminStripeSync))
 }
 
 // projectInOrg loads a project and checks it belongs to the caller's org.
@@ -457,7 +457,7 @@ func (s *Server) adminAddMarkup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.markups.Invalidate()
-	s.audit(r, "markup.add", in.ID, in)
+	s.auditChange(r, "markup.add", in.ID, nil, in)
 	writeJSON(w, http.StatusCreated, in)
 }
 

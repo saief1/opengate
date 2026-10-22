@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -34,6 +35,17 @@ type Alerter struct {
 	client     *http.Client
 	log        *slog.Logger
 	queue      chan Event
+
+	lmu       sync.RWMutex
+	listeners []func(Event)
+}
+
+// Listen registers fn to receive every event passed to Send (in-process
+// consumers such as the dashboard live stream). fn must not block.
+func (a *Alerter) Listen(fn func(Event)) {
+	a.lmu.Lock()
+	a.listeners = append(a.listeners, fn)
+	a.lmu.Unlock()
 }
 
 // NewAlerter starts a delivery worker. With an empty URL events are only logged.
@@ -52,6 +64,11 @@ func (a *Alerter) Send(e Event) {
 	if sendHook != nil {
 		sendHook(e)
 	}
+	a.lmu.RLock()
+	for _, fn := range a.listeners {
+		fn(e)
+	}
+	a.lmu.RUnlock()
 	if a.URL == "" {
 		return
 	}

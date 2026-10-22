@@ -331,3 +331,44 @@ func (s *Server) fromTrustedProxy(peer string) bool {
 	ip := net.ParseIP(peer)
 	return ip != nil && s.isTrusted(ip)
 }
+
+// cors answers browser CORS for the gateway surfaces (/v1/*, /mcp/*) when
+// cors_origins is configured. The admin API and dashboard never get CORS
+// headers, so a foreign page can't drive them with a user's session.
+func (s *Server) cors(next http.Handler) http.Handler {
+	if len(s.cfg.CORSOrigins) == 0 {
+		return next
+	}
+	anyOrigin := false
+	allowed := map[string]bool{}
+	for _, o := range s.cfg.CORSOrigins {
+		if o == "*" {
+			anyOrigin = true
+		}
+		allowed[strings.TrimRight(o, "/")] = true
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		p := r.URL.Path
+		if origin == "" || !(strings.HasPrefix(p, "/v1/") || strings.HasPrefix(p, "/mcp/")) || !(anyOrigin || allowed[origin]) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		h := w.Header()
+		if anyOrigin {
+			h.Set("Access-Control-Allow-Origin", "*")
+		} else {
+			h.Set("Access-Control-Allow-Origin", origin)
+			h.Add("Vary", "Origin")
+		}
+		h.Set("Access-Control-Expose-Headers", "X-OpenGate-Request-Id, Mcp-Session-Id, Retry-After")
+		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
+			h.Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Mcp-Session-Id, Mcp-Protocol-Version, X-OpenGate-Customer, Last-Event-Id")
+			h.Set("Access-Control-Max-Age", "600")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}

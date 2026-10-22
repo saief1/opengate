@@ -1,0 +1,72 @@
+# Kubernetes: kubectl create secret generic opengate --from-env-file=.env   (see secret.example.env)
+#             kubectl create configmap opengate-config --from-file=cloud.yaml=deploy/cloud.yaml
+#             kubectl apply -f deploy/k8s/opengate.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opengate
+  labels: {app: opengate}
+spec:
+  replicas: 1                     # exact spend limits need one replica (docs/security-model.md)
+  strategy: {type: Recreate}      # never two writers reserving budget at once
+  selector:
+    matchLabels: {app: opengate}
+  template:
+    metadata:
+      labels: {app: opengate}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: opengate
+          image: ghcr.io/saief1/opengate:latest   # TODO: pin a version tag / digest
+          args: ["serve", "-config", "/etc/opengate/cloud.yaml"]
+          ports: [{name: http, containerPort: 8080}]
+          envFrom: [{secretRef: {name: opengate}}]
+          volumeMounts: [{name: config, mountPath: /etc/opengate, readOnly: true}]
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /livez, port: http}
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 250m, memory: 256Mi}
+            limits: {memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+      volumes:
+        - name: config
+          configMap: {name: opengate-config}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opengate
+spec:
+  selector: {app: opengate}
+  ports: [{name: http, port: 80, targetPort: http}]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: opengate
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"       # SSE streaming
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    cert-manager.io/cluster-issuer: letsencrypt               # TODO: your issuer
+spec:
+  ingressClassName: nginx
+  tls: [{hosts: [cloud.example.com], secretName: opengate-tls}]
+  rules:
+    - host: cloud.example.com                                 # TODO: your domain
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: opengate, port: {name: http}}}

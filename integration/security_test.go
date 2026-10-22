@@ -26,7 +26,7 @@ func TestCrossOrgIDsAre404(t *testing.T) {
 	}))
 	defer stripe.Close()
 	e := setupWith(t, func(c *config.Config) {
-		c.Billing.Stripe = config.StripeConfig{Enabled: true, BaseURL: stripe.URL, Lag: time.Nanosecond, Interval: time.Hour}
+		c.Billing.Stripe = config.StripeConfig{Enabled: true, BaseURL: stripe.URL, Lag: time.Nanosecond, Interval: time.Hour, Window: time.Second}
 		c.StripeAPIKey = "sk_test_mock_only"
 	})
 	acme := e.admin("POST", "/admin/api/orgs", map[string]any{"name": "Acme"}, 201)["id"].(string)
@@ -117,7 +117,7 @@ func TestCrossOrgIDsAre404(t *testing.T) {
 		t.Fatalf("default overview counts acme traffic: %v", ov)
 	}
 	// Stripe sync only touches the caller's org.
-	time.Sleep(5 * time.Millisecond)
+	time.Sleep(1100 * time.Millisecond) // let the 1s reporting window close
 	if s := e.admin("POST", "/admin/api/billing/stripe/sync", nil, 200); s["customers"].(float64) != 0 {
 		t.Fatalf("default org synced acme customers: %v", s)
 	}

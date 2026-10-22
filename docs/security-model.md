@@ -57,6 +57,19 @@ and `golang.org/x/crypto`. The dashboard is vanilla JS with no npm packages, emb
   replicas a limit can be overshot by up to N × (concurrent requests) × (request cost) within one `budgets.sync_interval`.
   Run a single replica when limits must be exact to the cent. DB-backed reservations are on the roadmap.
 
+## Cloud mode (hosted billing)
+
+* Tenants bring their own provider keys. Cloud mode refuses to start if env provider keys are shared with all orgs, or if
+  operator-level Stripe meter sync is on; either would let tenants spend, or be billed through, the operator's accounts.
+* Stripe webhooks need a valid `Stripe-Signature` (HMAC-SHA256, 5-minute tolerance, constant-time compare). Events are
+  de-duplicated by id and treated as notifications only: OpenGate re-fetches the subscription from the Stripe API before
+  changing a plan. A Stripe customer maps to at most one org (unique index), and subscriptions of another customer,
+  unknown prices and unknown orgs are ignored.
+* Only org owners (or the operator token) can start Checkout or open the Customer Portal. Card data never touches
+  OpenGate. Price ids and Stripe secrets are never sent to the browser.
+* Sign-up is throttled per client IP. Email addresses are **not verified yet** (no email provider), so treat an
+  org's email as unverified until that ships.
+
 ## Customer attribution and cache
 
 * `X-OpenGate-Customer` and the `user` field are client-asserted. They're ignored unless the project sets

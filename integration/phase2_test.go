@@ -202,10 +202,20 @@ func TestGuardrails(t *testing.T) {
 	rs := e.chat(key, map[string]any{"model": "openai/gpt-leaky", "messages": msgs("hello"), "stream": true})
 	readSSE(t, rs)
 	// The stream's log row is written right after the last byte; poll.
-	l = e.logs("limit=1")[0]
+	// Rows are ordered by start time (ms); the stream and the previous
+	// request can share a millisecond, so look at the newest few.
+	streamRow := func() map[string]any {
+		for _, r := range e.logs("limit=3") {
+			if r["stream"] == true {
+				return r
+			}
+		}
+		return map[string]any{}
+	}
+	l = streamRow()
 	for i := 0; i < 50 && l["stream"] != true; i++ {
 		time.Sleep(10 * time.Millisecond)
-		l = e.logs("limit=1")[0]
+		l = streamRow()
 	}
 	if l["guard"] != "credit_card,email" || l["guard_action"] != "logged" {
 		t.Fatalf("stream finding: %v", l)
@@ -276,7 +286,7 @@ func TestCustomerBillingMarkupCSVAndStripe(t *testing.T) {
 	}))
 	defer stripe.Close()
 	e := setupWith(t, func(c *config.Config) {
-		c.Billing.Stripe = config.StripeConfig{Enabled: true, BaseURL: stripe.URL, Lag: time.Nanosecond, Interval: time.Hour}
+		c.Billing.Stripe = config.StripeConfig{Enabled: true, BaseURL: stripe.URL, Lag: time.Nanosecond, Interval: time.Hour, Window: time.Second}
 		c.StripeAPIKey = "sk_test_mock_only"
 	})
 	key, _, projectID := e.newKey("saas", "", nil)
@@ -325,7 +335,7 @@ func TestCustomerBillingMarkupCSVAndStripe(t *testing.T) {
 	}
 
 	// Stripe sync (mock server only) reports Acme's billed cents.
-	time.Sleep(5 * time.Millisecond)
+	time.Sleep(1100 * time.Millisecond) // let the 1s reporting window close
 	sync := e.admin("POST", "/admin/api/billing/stripe/sync", nil, 200)
 	mu.Lock()
 	n := len(events)
