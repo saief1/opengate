@@ -110,7 +110,7 @@ a{color:inherit;text-decoration:none}nav a:hover{color:var(--tx)}a.b{display:inl
 /* ---- live demo additions (landing.js) ---- */
 button.inst{cursor:pointer;display:inline-flex;align-items:center;gap:8px;font:13px "Geist Mono",monospace;transition:border-color .2s,color .2s}
 button.inst:hover{border-color:rgba(43,212,154,.4);color:var(--tx)}
-.inst .cp{font:500 10.5px "Geist Mono";color:var(--t3);border-left:1px solid var(--ln2);padding-left:9px;margin-left:4px}
+.inst .cp{white-space:nowrap;flex:none;font:500 10.5px "Geist Mono";color:var(--t3);border-left:1px solid var(--ln2);padding-left:9px;margin-left:4px}
 .inst.ok .cp{color:var(--g2)}
 .live-strip{display:inline-flex;align-items:center;gap:0;margin:28px auto 0;border:1px solid var(--ln2);border-radius:12px;background:rgba(15,15,17,.7);padding:0;overflow:hidden}
 .live-strip[hidden]{display:none}
@@ -175,4 +175,29 @@ button.inst:hover{border-color:rgba(43,212,154,.4);color:var(--tx)}
   .ldot:after,.ls-stat b.tick,.lr.enter,.pg-out.show>*{animation:none}
   .js .reveal{opacity:1;transform:none;transition:none}
   button.inst,.chip,.pg-out{transition:none}
+}
+
+/* phones and small tablets: the desktop layout is fixed at 1120px; reflow it */
+@media (max-width:1180px){
+  body{min-width:0;overflow-x:hidden}
+  .app,.sec,.x50{width:auto;margin-left:20px;margin-right:20px}
+}
+@media (max-width:760px){
+  nav{padding:0 16px;gap:14px;overflow-x:auto}
+  nav>a:not(.x1){display:none}.x3 .kbd{display:none}
+  h1{font-size:40px;padding:0 16px}
+  .sub{font-size:15px;padding:0 16px}
+  .ctas{flex-wrap:wrap;padding:0 16px}
+  .inst{max-width:100%;white-space:normal;word-break:break-all;text-align:left}
+  .live-strip{flex-wrap:wrap;margin-left:16px;margin-right:16px}
+  .ls-tag{width:100%;border-right:0;border-bottom:1px solid var(--ln)}
+  .ls-stat{min-width:0;flex:1 1 33%}
+  .app,.pg,.cols,.x30{grid-template-columns:minmax(0,1fr)!important}
+  .pane{border-right:0;border-bottom:1px solid var(--ln);overflow-x:auto}
+  .sec{padding-top:72px}
+  h2{font-size:32px}
+  .x23{flex-wrap:wrap;gap:16px 24px}
+  .x46{padding:28px 18px}
+  .x50{grid-template-columns:1fr 1fr}
+  .lr{grid-template-columns:52px minmax(0,1fr) 46px 58px;font-size:11px}.lr .lb{display:none}
 }

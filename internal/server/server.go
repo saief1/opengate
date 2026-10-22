@@ -278,12 +278,17 @@ func (s *Server) Handler() http.Handler {
 			http.Redirect(w, r, "/ui/", http.StatusFound)
 		})
 	}
-	return s.recoverer(s.accessLog(commonHeaders(s.cors(mux))))
+	return s.recoverer(s.accessLog(s.commonHeaders(s.cors(mux))))
 }
 
-func commonHeaders(next http.Handler) http.Handler {
+func (s *Server) commonHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		// HSTS whenever the client connection is HTTPS, including TLS terminated by a
+		// trusted proxy (Fly, a load balancer); r.TLS alone is nil behind those.
+		if s.requestIsHTTPS(r) {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+		}
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		next.ServeHTTP(w, r)
 	})
@@ -295,9 +300,6 @@ func uiHeaders(next http.Handler) http.Handler {
 		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Cache-Control", "no-cache")
-		if r.TLS != nil {
-			h.Set("Strict-Transport-Security", "max-age=31536000")
-		}
 		next.ServeHTTP(w, r)
 	})
 }

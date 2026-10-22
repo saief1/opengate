@@ -91,12 +91,21 @@ function table(headers, rows, opts = {}) {
   return el("div", { class: "tscroll" }, el("table", { class: opts.cls }, el("thead", {}, el("tr", {}, headers.map((h) => el("th", { class: h.startsWith(">") ? "r" : "" }, h.replace(/^>/, ""))))),
     el("tbody", {}, rows)));
 }
+// "168h0m0s" -> "7 days", "36h0m0s" -> "36 hours"
+function goDuration(d) {
+  const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:[\d.]+s)?$/.exec(String(d || ""));
+  if (!m || (!m[1] && !m[2])) return String(d || "");
+  const h = +(m[1] || 0), min = +(m[2] || 0);
+  if (h && h % 24 === 0 && !min) return h / 24 + (h === 24 ? " day" : " days");
+  if (h && !min) return h + (h === 1 ? " hour" : " hours");
+  return h ? `${h}h ${min}m` : min + " minutes";
+}
 function empty(title, text, action) { return el("div", { class: "empty" }, el("b", {}, title), text ? el("div", {}, text) : null, action || null); }
 function toast(msg, bad) {
   const t = $("toast"); t.textContent = msg; t.className = "toast" + (bad ? " bad" : "");
   clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.add("hidden"), 3500);
 }
-async function copy(text, what) { try { await navigator.clipboard.writeText(text); toast((what || "Copied") + " to clipboard"); } catch { toast("Copy failed; select and copy manually", true); } }
+async function copy(text, what) { try { await navigator.clipboard.writeText(text); toast((what ? what + " copied" : "Copied") + " to clipboard"); } catch { toast("Copy failed; select and copy manually", true); } }
 function modal(title, ...content) {
   $("modal-body").className = "modal-body";
   $("modal-body").replaceChildren(el("h2", {}, title), ...content);
@@ -423,6 +432,8 @@ PAGES.requests = async (root, actions, crumb, r) => {
   if (r.id) return requestDetail(root, actions, crumb, r.id);
   const q = r.q.get("q") || "", view = r.q.get("view") || "all", page = +(r.q.get("p") || 0), per = 25;
   const f = parseFilter(q);
+  const bare = q.replace(/(\w+):(\S+)/g, "").trim();
+  if (/^req_\w+$/.test(bare) && !Object.keys(f).length) return requestDetail(root, actions, crumb, bare);
   const keyId = f.key ? (S.keys.find((k) => k.name === f.key || k.id === f.key || k.prefix === f.key) || {}).id || f.key : "";
   const projId = f.project ? (S.projects.find((p) => p.name === f.project || p.id === f.project) || {}).id || f.project : "";
   const params = new URLSearchParams({ limit: per, offset: page * per });
@@ -430,6 +441,7 @@ PAGES.requests = async (root, actions, crumb, r) => {
   if (f.customer) params.set("customer_id", f.customer); if (projId) params.set("project_id", projId);
   if (view === "errors") params.set("errors", "1"); if (view === "guard") params.set("guard", "1");
   const [logs, ser] = await Promise.all([api("/logs?" + params), api("/series?hours=24&by=provider")]);
+  if (bare) { logs.data = []; logs.total = 0; } // free text isn't a server-side filter; don't pretend it matched everything
   const sm = ser.summary;
   actions.push(liveIndicator(), tryItButton(), el("span", { class: "btn", style: { cursor: "default" } }, "Last 24h"));
   const input = el("input", { class: "inp m", value: q, placeholder: "agent:planner model:openai/gpt-4o-mini customer:acme key:name project:name", style: { flex: 1, border: 0, background: "transparent", boxShadow: "none" } });
@@ -451,15 +463,22 @@ PAGES.requests = async (root, actions, crumb, r) => {
       ["Cost", usdBig(sm.cost_usd), sm.requests ? "avg " + usd(sm.cost_usd / sm.requests, 4) + " / req" : "no requests"],
       ["P50 latency", ser.latency.samples ? [num(Math.round(ser.latency.p50_ms)), el("small", {}, " ms")] : el("span", { class: "dim" }, "—"), ser.latency.samples ? "p95 " + ms(ser.latency.p95_ms) + " · successful, uncached" : "no successful requests"],
       ["Errors", sm.requests ? [((sm.errors / sm.requests) * 100).toFixed(1), el("span", { class: "dim" }, "%")] : el("span", { class: "dim" }, "—"), `${num(sm.errors)} errors · ${num(sm.blocked)} blocked by policy`]]),
-    el("div", { style: { display: "flex", gap: "8px", alignItems: "stretch" } }, el("div", { style: { flex: 1 } }, filterBar),
+    el("div", { style: { display: "flex", gap: "8px", alignItems: "stretch", flexWrap: "wrap" } }, el("div", { style: { flex: "1 1 260px", minWidth: 0 } }, filterBar),
       seg([["all", "All"], ["errors", "Errors"], ["guard", "Guardrail"]], view, (v) => setQuery({ view: v === "all" ? "" : v, p: "" })),
       el("button", { class: "btn", onclick: exportCsv, disabled: !logs.data.length, title: "Exports the rows on this page" }, "Export CSV")),
     card("Request log", table(["Request ID", "Time", "Agent", "Customer", "Model", ">Tokens", ">Cost", ">Latency", "Status", ""], rows,
-      { cls: "tight", empty: empty(q || view !== "all" ? "No requests match this filter" : "No requests yet", q || view !== "all" ? "Clear the filter to see everything." : "Requests appear here as soon as traffic flows through the gateway.") }), { sub: "newest first", right: pager })));
+      { cls: "tight", empty: bare ? empty("Use field filters", `"${bare}" isn't a filter. Search with agent:, model:, key:, customer: or project:, or paste a request ID.`) : empty(q || view !== "all" ? "No requests match this filter" : "No requests yet", q || view !== "all" ? "Clear the filter to see everything." : "Requests appear here as soon as traffic flows through the gateway.") }), { sub: "newest first", right: pager })));
 };
 
 async function requestDetail(root, actions, crumb, id) {
-  const [l, P] = await Promise.all([api("/logs/" + encodeURIComponent(id)), pricing()]);
+  let l, P;
+  try { [l, P] = await Promise.all([api("/logs/" + encodeURIComponent(id), { quiet: true }), pricing()]); }
+  catch (e) {
+    if (e.status === 401) { showAuth(); throw new Error("unauthorized"); }
+    if (e.status !== 404) throw e;
+    crumb.push(el("a", { href: "#requests" }, "Requests"), " / ", el("b", {}, id));
+    return root.append(card("Request", empty("Request not found", `No request with ID ${id} in this organization. It may be older than the log retention window.`, el("a", { class: "btn sm", href: "#requests" }, "← Back to requests"))));
+  }
   const proj = S.projects.find((p) => p.id === l.project_id) || {};
   crumb.push(el("a", { href: "#requests" }, "Requests"), " / ", el("b", {}, l.id));
   const pretty = (s) => { try { return JSON.stringify(JSON.parse(s), null, 2); } catch { return s; } };
@@ -966,7 +985,7 @@ PAGES.team = async (root) => {
   const invite = can("admin") ? el("form", { style: { display: "flex", gap: "8px", padding: "12px 16px", borderBottom: "1px solid var(--ln)" }, onsubmit: async (e) => {
     e.preventDefault(); const r = await api("/invites", { method: "POST", body: { email: email.value, role: role.value } });
     const link = location.origin + "/ui/#invite=" + r.token;
-    modal("Invite created", el("div", { class: "form" }, el("div", { class: "t2" }, `Send this link to ${r.invite ? r.invite.email : email.value}. It works once and expires in ${S.cfg.auth ? S.cfg.auth.invite_ttl : "7 days"}.`), el("div", { class: "copyline g" }, el("span", {}, link), el("button", { class: "btn sm", onclick: () => copy(link, "Invite link") }, "Copy")),
+    modal("Invite created", el("div", { class: "form" }, el("div", { class: "t2" }, `Send this link to ${r.invite ? r.invite.email : email.value}. It works once and expires in ${S.cfg.auth ? goDuration(S.cfg.auth.invite_ttl) : "7 days"}.`), el("div", { class: "copyline g" }, el("span", {}, link), el("button", { class: "btn sm", onclick: () => copy(link, "Invite link") }, "Copy")),
       el("div", { class: "acts2" }, el("button", { class: "btn", onclick: () => { closeModal(); render(); } }, "Done"))));
   } }, email, role, el("button", { class: "btn gr", type: "submit" }, "Invite")) : null;
   const ROLE_ST = { owner: "ok", admin: "bl", member: "mu", viewer: "mu" };
