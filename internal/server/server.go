@@ -115,7 +115,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		rates = budget.NewDBRates(o.Store)
 	}
 	enf, err := budget.NewEnforcer(ctx, o.Store, o.Alerter, o.Logger, budget.Options{
-		Rates: rates, SyncInterval: o.Config.Budgets.SyncInterval, Strict: o.Config.Budgets.Strict})
+		Rates: rates, SyncInterval: o.Config.Budgets.SyncInterval, Strict: o.Config.Budgets.Strict,
+		OrgDefault: store.Limit{DailyUSD: o.Config.Budgets.OrgDailyUSD, MonthlyUSD: o.Config.Budgets.OrgMonthlyUSD}})
 	if err != nil {
 		return nil, err
 	}
@@ -457,6 +458,8 @@ var errKilled = errors.New("killed by operator")
 
 type flight struct {
 	keyID, projectID string
+	orgID, agentID   string // agentID = project_id/agent
+	customerID       string
 	cancel           context.CancelCauseFunc
 }
 
@@ -519,6 +522,20 @@ func (s *Server) SweepKills(ctx context.Context) int {
 	}
 	if n > 0 {
 		s.log.Info("kill sweep aborted in-flight requests", "count", n)
+	}
+	return n
+}
+
+// killWhere cancels in-flight requests matching fn.
+func (f *inflight) killWhere(fn func(flight) bool) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, fl := range f.m {
+		if fn(fl) {
+			fl.cancel(errKilled)
+			n++
+		}
 	}
 	return n
 }
