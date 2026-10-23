@@ -14,7 +14,7 @@ const DRAFT_PLANS = [
 ];
 const PRICING_DRAFT = true; // shows the "Draft pricing · not final" label
 const TOKEN_KEY = "opengate_admin_token", ORG_KEY = "opengate_org", PLAN_KEY = "opengate_signup_plan";
-const BLOCK_CODES = ["budget_exceeded", "key_killed", "project_killed", "killed", "killed_mid_stream", "rate_limit_exceeded", "model_not_allowed", "max_tokens_exceeded", "guardrail_blocked", "prompt_injection"];
+const BLOCK_CODES = ["budget_exceeded", "key_killed", "project_killed", "org_killed", "agent_killed", "customer_killed", "killed", "killed_mid_stream", "rate_limit_exceeded", "model_not_allowed", "max_tokens_exceeded", "guardrail_blocked", "prompt_injection"];
 const PALETTE = ["#2BD49A", "#7AA2F7", "#B58CF5", "#E8B24A", "#F06A6A", "#5FB3C9", "#A1A1A8"];
 const MONO_BG = ["#1F6F55", "#35508F", "#5B3E8A", "#6B4A2A", "#2E5E6B", "#6B2E45", "#3A3A40"];
 
@@ -91,12 +91,21 @@ function table(headers, rows, opts = {}) {
   return el("div", { class: "tscroll" }, el("table", { class: opts.cls }, el("thead", {}, el("tr", {}, headers.map((h) => el("th", { class: h.startsWith(">") ? "r" : "" }, h.replace(/^>/, ""))))),
     el("tbody", {}, rows)));
 }
+// "168h0m0s" -> "7 days", "36h0m0s" -> "36 hours"
+function goDuration(d) {
+  const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:[\d.]+s)?$/.exec(String(d || ""));
+  if (!m || (!m[1] && !m[2])) return String(d || "");
+  const h = +(m[1] || 0), min = +(m[2] || 0);
+  if (h && h % 24 === 0 && !min) return h / 24 + (h === 24 ? " day" : " days");
+  if (h && !min) return h + (h === 1 ? " hour" : " hours");
+  return h ? `${h}h ${min}m` : min + " minutes";
+}
 function empty(title, text, action) { return el("div", { class: "empty" }, el("b", {}, title), text ? el("div", {}, text) : null, action || null); }
 function toast(msg, bad) {
   const t = $("toast"); t.textContent = msg; t.className = "toast" + (bad ? " bad" : "");
   clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.add("hidden"), 3500);
 }
-async function copy(text, what) { try { await navigator.clipboard.writeText(text); toast((what || "Copied") + " to clipboard"); } catch { toast("Copy failed; select and copy manually", true); } }
+async function copy(text, what) { try { await navigator.clipboard.writeText(text); toast((what ? what + " copied" : "Copied") + " to clipboard"); } catch { toast("Copy failed; select and copy manually", true); } }
 function modal(title, ...content) {
   $("modal-body").className = "modal-body";
   $("modal-body").replaceChildren(el("h2", {}, title), ...content);
@@ -210,10 +219,11 @@ const svgIcon = (name) => el("svg", { viewBox: "0 0 24 24" }, ICONS[name].map(([
 const logoSvg = (s) => el("div", { class: "logo" }, el("svg", { width: s || 12, height: s || 12, viewBox: "0 0 24 24", fill: "none", stroke: "#fff", "stroke-width": 2.6, "stroke-linecap": "round" }, el("path", { d: "M5 20V9l7-5 7 5v11" }), el("path", { d: "M10 20v-5h4v5" })));
 const NAV = [
   ["overview", "Overview"], ["requests", "Requests", "requests"], ["keys", "Keys", "keys"], ["agents", "Agents", "agents"], ["customers", "Customers", "customers"],
-  "Control", ["budgets", "Budgets"], ["policies", "Policies"], ["mcp", "MCP tools", "mcp"], ["providers", "Providers & models"], ["kill", "Kill switch", null, "policies"],
-  "Workspace", ["setup", "Setup & SDK"], ["settings", "Settings", null, "team"], ["audit", "Audit log"], ["billing", "Plan & billing"],
+  "Control", ["budgets", "Budgets"], ["policies", "Policies"], ["mcp", "MCP tools", "mcp"], ["providers", "Providers & models"], ["kill", "Kill switch"],
+  "Workspace", ["setup", "Setup & SDK"], ["settings", "Settings", null, "team"], ["audit", "Audit log"],
+  "Account", ["billing", "Plan & billing"],
 ];
-const TITLES = { overview: "Overview", requests: "Requests", keys: "Keys", agents: "Agents", customers: "Cost per customer", budgets: "Budgets & alerts", policies: "Kill switch & policies",
+const TITLES = { overview: "Overview", requests: "Requests", keys: "Keys", agents: "Agents", customers: "Cost per customer", budgets: "Budgets & alerts", policies: "Policies", kill: "Kill switch",
   providers: "Providers & models", setup: "Setup & SDK", team: "Team & settings", billing: "Plan & billing", mcp: "MCP tool gateway", audit: "Audit log" };
 // Roles as shown to people ("viewer" is stored; "read-only" is its label).
 const ROLE_LABEL = { owner: "Owner", admin: "Admin", member: "Member", viewer: "Read-only" };
@@ -233,8 +243,8 @@ function sidebar(active) {
   const items = NAV.map((n) => {
     if (typeof n === "string") return el("div", { class: "sec" }, n);
     const [ic, label, count, target] = n; const page = target || ic;
-    const on = ic === "kill" ? false : page === active;
-    return el("a", { class: "it" + (on ? " on" : ""), href: "#" + page }, svgIcon(ic), label, count && S.counts[count] !== undefined ? el("span", { class: "n" }, compact(S.counts[count])) : null);
+    const on = page === active;
+    return el("a", { class: "it" + (on ? " on" : "") + (ic === "kill" && S.globalKill ? " killon" : ""), href: "#" + page }, svgIcon(ic), label, ic === "kill" && S.globalKill ? el("span", { class: "n red" }, "ON") : null, count && S.counts[count] !== undefined ? el("span", { class: "n" }, compact(S.counts[count])) : null);
   });
   const orgPick = me.orgs.length > 1
     ? el("select", { "aria-label": "Organization", onchange: (e) => switchOrg(e.target.value) }, me.orgs.map((o) => el("option", { value: o.id, selected: o.id === me.org_id }, o.name)))
@@ -279,8 +289,9 @@ async function render() {
 }
 // Sidebar counters + health, loaded after the page so navigation stays fast.
 async function refreshChrome() {
-  const [logs, cust, ready, ser] = await Promise.all([soft("/logs?limit=1", {}), soft("/customers", { data: [] }), fetch("/readyz").then((r) => r.ok).catch(() => false), soft("/series?hours=24&by=provider", null)]);
-  const changed = S.counts.requests !== logs.total || S.counts.customers !== (cust.data || []).length || !S.health;
+  const [logs, cust, ready, ser, ks] = await Promise.all([soft("/logs?limit=1", {}), soft("/customers", { data: [] }), fetch("/readyz").then((r) => r.ok).catch(() => false), soft("/series?hours=24&by=provider", null), soft("/kill-switch", null)]);
+  const changed = S.counts.requests !== logs.total || S.counts.customers !== (cust.data || []).length || !S.health || (ks && !!ks.global !== !!S.globalKill);
+  if (ks) S.globalKill = !!ks.global;
   S.counts.requests = logs.total; S.counts.customers = new Set((cust.data || []).map((c) => c.customer_id)).size;
   S.health = { ok: ready, p50: ser && ser.latency ? ser.latency.p50_ms : 0 };
   if (changed) { const sb = document.querySelector(".sb"); if (sb) sb.replaceWith(sidebar(route().page)); }
@@ -289,6 +300,10 @@ async function refreshChrome() {
 // ---------- ⌘K palette ----------
 function palette() {
   const items = [
+    ...(can("member") ? [S.globalKill
+      ? { label: "Release the global kill switch", hint: "action · kill switch", run: () => setGlobalKill(false) }
+      : { label: "Engage the global kill switch (stop all traffic)", hint: "action · kill switch", run: () => setGlobalKill(true) }] : []),
+    { label: "Kill a key, agent or customer…", hint: "action · kill switch", go: "#kill" },
     ...Object.entries(TITLES).map(([k, t]) => ({ label: t, hint: "page", go: "#" + k })),
     ...S.keys.filter((k) => !k.revoked).map((k) => ({ label: k.name, hint: "key · " + keyLabel(k), go: "#keys" })),
     ...[...new Set(S.keys.filter((k) => k.agent).map((k) => k.agent))].map((a) => ({ label: a, hint: "agent", go: "#requests?q=" + encodeURIComponent("agent:" + a) })),
@@ -303,7 +318,7 @@ function palette() {
     sel = Math.min(sel, Math.max(0, shown.length - 1));
     list.replaceChildren(...(shown.length ? shown.map((i, n) => el("div", { class: "pi" + (n === sel ? " sel" : ""), onclick: () => pick(i) }, i.label, el("span", { class: "k" }, i.hint))) : [el("div", { class: "empty" }, "No matches")]));
   };
-  const pick = (i) => { closeModal(); location.hash = i.go; };
+  const pick = (i) => { closeModal(); if (i.run) i.run(); else location.hash = i.go; };
   input.addEventListener("input", () => { sel = 0; draw(); });
   input.addEventListener("keydown", (e) => {
     if (e.key === "ArrowDown") { sel = Math.min(shown.length - 1, sel + 1); draw(); e.preventDefault(); }
@@ -323,7 +338,7 @@ function statusTag(l) {
   if (l.status < 400) return st("ok", l.status);
   return st(BLOCK_CODES.includes(l.error_code) ? "bk" : "rt", l.status, l.error_message || "");
 }
-const ERR_LABEL = { budget_exceeded: "Over budget", key_killed: "Kill switch", project_killed: "Kill switch", killed: "Kill switch", killed_mid_stream: "Killed mid-stream",
+const ERR_LABEL = { budget_exceeded: "Over budget", key_killed: "Kill switch", project_killed: "Kill switch", org_killed: "Global kill switch", agent_killed: "Agent killed", customer_killed: "Customer killed", killed: "Kill switch", killed_mid_stream: "Killed mid-stream",
   rate_limit_exceeded: "Rate limited", model_not_allowed: "Model not allowed", max_tokens_exceeded: "Max tokens", guardrail_blocked: "Guardrail blocked", prompt_injection: "Prompt injection", plan_quota_exceeded: "Plan quota" };
 function logTags(l) {
   const t = [];
@@ -377,20 +392,23 @@ const PAGES = {};
 PAGES.overview = async (root, actions, crumb, r) => {
   const hours = +(r.q.get("h") || 24);
   const [ser, models, logs, rules, P] = await Promise.all([api(`/series?hours=${hours}&by=provider`), api(`/series?hours=${hours}&by=model`), api("/logs?limit=11"), soft("/routing/rules", { data: [] }), pricing()]);
+  const perf = await soft("/performance?hours=24", { models: [], providers: [] });
   const prev = ser.previous, sm = ser.summary;
   const monthSpend = (await soft("/overview?days=1", { month: {} })).month.cost_usd || 0;
+  const oc = await soft("/org/spend-cap", null);
   const projLimits = S.limits.filter((l) => l.scope === "project" && l.monthly_usd > 0);
-  const cap = projLimits.reduce((a, l) => a + l.monthly_usd, 0), capSpent = projLimits.reduce((a, l) => a + l.monthly_spent, 0);
+  const orgCap = !!(oc && oc.monthly_usd > 0);
+  const cap = orgCap ? oc.monthly_usd : projLimits.reduce((a, l) => a + l.monthly_usd, 0), capSpent = orgCap ? (oc.monthly_spent || 0) : projLimits.reduce((a, l) => a + l.monthly_spent, 0);
   const anyKilled = S.projects.some((p) => p.killed);
   actions.push(liveIndicator(), tryItButton(),
     el("span", { class: "seg" }, RANGES.map(([v, l]) => el("button", { class: +v === hours ? "a" : "", onclick: () => setQuery({ h: v === "24" ? "" : v }) }, l))),
-    can("member") ? el("a", { class: "btn k", href: "#policies" }, svgIconSmall("kill"), anyKilled ? "Kill switch · active" : "Kill switch") : null);
+    can("member") ? el("a", { class: "btn k", href: "#kill" }, svgIconSmall("kill"), anyKilled || S.globalKill ? "Kill switch · active" : "Kill switch") : null);
   const k = kpis([
     ["Spend · " + rangeLabel(hours), usdBig(sm.cost_usd), [delta(sm.cost_usd, prev.cost_usd), prev.cost_usd ? " vs prior " + rangeLabel(hours) : "no prior traffic"]],
     ["Requests", compact(sm.requests), [delta(sm.requests, prev.requests), " · " + (sm.requests / (hours * 3600)).toFixed(2) + " rps avg"]],
     ["Tokens", compact(sm.tokens), sm.errors ? `${num(sm.errors)} errors · ${num(sm.blocked)} blocked` : "no errors"],
     ["Budget used · " + new Date().toLocaleString("en-US", { month: "short" }), cap ? [pct(capSpent, cap), el("span", { class: "dim" }, "%")] : el("span", { class: "dim" }, "—"),
-      cap ? `${usd(capSpent, 0)} of ${usd(cap, 0)} project caps` : `${usd(monthSpend)} this month · no monthly project cap`],
+      cap ? `${usd(capSpent, 0)} of ${usd(cap, 0)} ` + (orgCap ? "org cap" : "· sum of project caps") : `${usd(monthSpend)} this month · no monthly cap`],
   ]);
   const buckets = bucketRange(ser.since, ser.now, ser.bucket_seconds);
   const chart = card("Spend by provider", lineChart(seriesPoints(ser), { buckets, bucketSeconds: ser.bucket_seconds, height: 150 }), { sub: "USD / " + (ser.bucket_seconds >= 86400 ? "day" : "hour") });
@@ -410,7 +428,7 @@ PAGES.overview = async (root, actions, crumb, r) => {
     rule.fallbacks.length ? ["fallbacks: ", el("span", { class: "c2" }, JSON.stringify(rule.fallbacks)), "\n"] : null, "scope: ", el("span", { class: "c1" }, rule.project_id ? projName(rule.project_id) : "all projects"))
     : empty("No routing rules yet", "Requests go to the model they ask for, with alias failover.", el("a", { class: "btn", href: "#policies" }, "Add a rule")), { right: rule ? el("span", { class: "st ok" }, "active") : null, sub: rule ? "priority " + rule.priority : "" });
   const feed = el("div", {}, liveCard("Live requests", logs.data));
-  root.append(el("div", { class: "g split" }, el("div", { class: "g" }, k, chart, top), el("div", { class: "g" }, feed, policy)));
+  root.append(el("div", { class: "g split" }, el("div", { class: "g" }, k, chart, top), el("div", { class: "g" }, feed, successCard(perf), latencyCard(perf, 5), policy)));
   poller = setInterval(async () => { if (Live.state === "live" || document.hidden || !$("modal").classList.contains("hidden")) return; const l = await soft("/logs?limit=11", null); if (l) feed.replaceChildren(liveCard("Live requests", l.data)); }, 5000);
 };
 function svgIconSmall(n) { const s = svgIcon(n); s.setAttribute("width", 13); s.setAttribute("height", 13); s.setAttribute("fill", "none"); s.setAttribute("stroke", "currentColor"); s.setAttribute("stroke-width", 2); return s; }
@@ -423,6 +441,8 @@ PAGES.requests = async (root, actions, crumb, r) => {
   if (r.id) return requestDetail(root, actions, crumb, r.id);
   const q = r.q.get("q") || "", view = r.q.get("view") || "all", page = +(r.q.get("p") || 0), per = 25;
   const f = parseFilter(q);
+  const bare = q.replace(/(\w+):(\S+)/g, "").trim();
+  if (/^req_\w+$/.test(bare) && !Object.keys(f).length) return requestDetail(root, actions, crumb, bare);
   const keyId = f.key ? (S.keys.find((k) => k.name === f.key || k.id === f.key || k.prefix === f.key) || {}).id || f.key : "";
   const projId = f.project ? (S.projects.find((p) => p.name === f.project || p.id === f.project) || {}).id || f.project : "";
   const params = new URLSearchParams({ limit: per, offset: page * per });
@@ -430,6 +450,7 @@ PAGES.requests = async (root, actions, crumb, r) => {
   if (f.customer) params.set("customer_id", f.customer); if (projId) params.set("project_id", projId);
   if (view === "errors") params.set("errors", "1"); if (view === "guard") params.set("guard", "1");
   const [logs, ser] = await Promise.all([api("/logs?" + params), api("/series?hours=24&by=provider")]);
+  if (bare) { logs.data = []; logs.total = 0; } // free text isn't a server-side filter; don't pretend it matched everything
   const sm = ser.summary;
   actions.push(liveIndicator(), tryItButton(), el("span", { class: "btn", style: { cursor: "default" } }, "Last 24h"));
   const input = el("input", { class: "inp m", value: q, placeholder: "agent:planner model:openai/gpt-4o-mini customer:acme key:name project:name", style: { flex: 1, border: 0, background: "transparent", boxShadow: "none" } });
@@ -451,15 +472,22 @@ PAGES.requests = async (root, actions, crumb, r) => {
       ["Cost", usdBig(sm.cost_usd), sm.requests ? "avg " + usd(sm.cost_usd / sm.requests, 4) + " / req" : "no requests"],
       ["P50 latency", ser.latency.samples ? [num(Math.round(ser.latency.p50_ms)), el("small", {}, " ms")] : el("span", { class: "dim" }, "—"), ser.latency.samples ? "p95 " + ms(ser.latency.p95_ms) + " · successful, uncached" : "no successful requests"],
       ["Errors", sm.requests ? [((sm.errors / sm.requests) * 100).toFixed(1), el("span", { class: "dim" }, "%")] : el("span", { class: "dim" }, "—"), `${num(sm.errors)} errors · ${num(sm.blocked)} blocked by policy`]]),
-    el("div", { style: { display: "flex", gap: "8px", alignItems: "stretch" } }, el("div", { style: { flex: 1 } }, filterBar),
+    el("div", { style: { display: "flex", gap: "8px", alignItems: "stretch", flexWrap: "wrap" } }, el("div", { style: { flex: "1 1 260px", minWidth: 0 } }, filterBar),
       seg([["all", "All"], ["errors", "Errors"], ["guard", "Guardrail"]], view, (v) => setQuery({ view: v === "all" ? "" : v, p: "" })),
       el("button", { class: "btn", onclick: exportCsv, disabled: !logs.data.length, title: "Exports the rows on this page" }, "Export CSV")),
     card("Request log", table(["Request ID", "Time", "Agent", "Customer", "Model", ">Tokens", ">Cost", ">Latency", "Status", ""], rows,
-      { cls: "tight", empty: empty(q || view !== "all" ? "No requests match this filter" : "No requests yet", q || view !== "all" ? "Clear the filter to see everything." : "Requests appear here as soon as traffic flows through the gateway.") }), { sub: "newest first", right: pager })));
+      { cls: "tight", empty: bare ? empty("Use field filters", `"${bare}" isn't a filter. Search with agent:, model:, key:, customer: or project:, or paste a request ID.`) : empty(q || view !== "all" ? "No requests match this filter" : "No requests yet", q || view !== "all" ? "Clear the filter to see everything." : "Requests appear here as soon as traffic flows through the gateway.") }), { sub: "newest first", right: pager })));
 };
 
 async function requestDetail(root, actions, crumb, id) {
-  const [l, P] = await Promise.all([api("/logs/" + encodeURIComponent(id)), pricing()]);
+  let l, P;
+  try { [l, P] = await Promise.all([api("/logs/" + encodeURIComponent(id), { quiet: true }), pricing()]); }
+  catch (e) {
+    if (e.status === 401) { showAuth(); throw new Error("unauthorized"); }
+    if (e.status !== 404) throw e;
+    crumb.push(el("a", { href: "#requests" }, "Requests"), " / ", el("b", {}, id));
+    return root.append(card("Request", empty("Request not found", `No request with ID ${id} in this organization. It may be older than the log retention window.`, el("a", { class: "btn sm", href: "#requests" }, "← Back to requests"))));
+  }
   const proj = S.projects.find((p) => p.id === l.project_id) || {};
   crumb.push(el("a", { href: "#requests" }, "Requests"), " / ", el("b", {}, l.id));
   const pretty = (s) => { try { return JSON.stringify(JSON.parse(s), null, 2); } catch { return s; } };
@@ -476,14 +504,20 @@ async function requestDetail(root, actions, crumb, id) {
     ["Tokens", tok ? num(tok) : el("span", { class: "dim" }, "0"), `${num(l.prompt_tokens)} in · ${num(l.cached_tokens)} cached · ${num(l.completion_tokens)} out`],
     ["Attempts", num(l.attempts), l.attempts > 1 ? "failed over to " + (l.provider || "—") : l.attempts === 0 ? "refused before any provider" : "first attempt succeeded"],
   ]);
-  // Timeline built only from logged facts (per-attempt detail isn't stored).
+  // Timeline built only from logged facts; each upstream attempt is a hop.
   const t = [];
   t.push(["", "Received", `${l.endpoint} · key ${keyName(l.key_id)} · project ${proj.name || "—"}`, l.ts]);
   if (l.guard) t.push([l.guard_action === "blocked" ? "r" : "w", "Guardrail · " + l.guard, l.guard_action || "flagged"]);
   if (l.cache_hit) t.push(["", "Cache hit", "response served from the exact-match cache"]);
   if (l.route) t.push(["", "Routed · " + l.route.replace(/^rule:/, "rule "), `${l.model} → ${l.provider ? l.provider + "/" : ""}${l.provider_model || "?"}` + (l.baseline_cost_usd > l.cost_usd ? ` · saved ${usd(l.baseline_cost_usd - l.cost_usd, 4)}` : "")]);
-  if (l.attempts > 1) t.push(["w", `${l.attempts - 1} failed attempt${l.attempts > 2 ? "s" : ""}`, "retried / failed over (per-attempt detail is not logged)"]);
-  if (l.status < 400) t.push(["", `${l.provider || "provider"} · ${l.status}`, `${l.provider_model || l.model}${l.latency_ms ? " · " + ms(l.latency_ms) : ""}`]);
+  const hops = l.hops || [];
+  if (hops.length) hops.forEach((h, i) => {
+    const ok = h.status > 0 && h.status < 400 && !h.error;
+    const prev = hops[i - 1]; const kind = !prev ? "Attempt 1" : prev.provider === h.provider && prev.model === h.model ? `Retry · attempt ${i + 1}` : `Failover · attempt ${i + 1}`;
+    t.push([ok ? "" : "w", `${kind} · ${h.provider}/${h.model} · ${h.status || "no response"}`, (ok ? "" : (h.error || "failed") + " · ") + ms(h.latency_ms) + (l.stream && ok ? " to first chunk" : ""), h.started_at]);
+  });
+  else if (l.attempts > 1) t.push(["w", `${l.attempts - 1} failed attempt${l.attempts > 2 ? "s" : ""}`, "retried / failed over (logged before per-hop detail was recorded)"]);
+  if (l.status < 400) { if (!hops.length) t.push(["", `${l.provider || "provider"} · ${l.status}`, `${l.provider_model || l.model}${l.latency_ms ? " · " + ms(l.latency_ms) : ""}`]); }
   else t.push([BLOCK_CODES.includes(l.error_code) ? "r" : "w", `${l.status} · ${ERR_LABEL[l.error_code] || l.error_code || "error"}`, l.error_message || ""]);
   if (l.status < 400) t.push(["", "Reconciled", `actual ${usd(l.cost_usd, 4)}${l.usage_estimated ? " (estimated usage)" : ""}`]);
   const timeline = card("What happened", el("div", {}, el("div", { class: "timeline" }, t.map(([c, a, b, ts]) => el("div", { class: "tl" }, el("span", { class: "d " + c }), el("div", {}, el("div", { class: "tt" }, a), el("div", { class: "ts" }, b)), el("span", { class: "tm" }, ts ? hhmmss(ts) : "")))),
@@ -534,13 +568,7 @@ async function killKey(k, kill) {
   if (kill && !confirm(`Kill key ${k.name}? New requests get 403 and in-flight streams are aborted.`)) return;
   await api(`/keys/${k.id}/${kill ? "kill" : "unkill"}`, { method: "POST" }); toast(kill ? "Key killed" : "Key revived"); render();
 }
-PAGES.keys = async (root, actions) => {
-  const ser = await api("/series?hours=24&by=key");
-  const live = S.keys.filter((k) => !k.revoked);
-  const killed = live.filter((k) => k.killed);
-  const lastKill = (await soft("/audit?limit=50", { data: [] })).data.find((a) => a.action === "key.kill");
-  const today = live.reduce((a, k) => a + (k.spend_today || 0), 0);
-  actions.push(el("span", { class: "m mut", style: { fontSize: "11px" } }, "stored only as SHA-256 hashes"), can("member") ? el("button", { class: "btn gr", onclick: () => document.querySelector("#nk-name")?.focus() }, "+ New key") : null);
+function keysTable(live) {
   const rows = live.map((k) => {
     const rl = limitFor("key", k.id);
     return el("tr", {}, el("td", {}, el("div", {}, k.name), el("div", { class: "m mut", style: { fontSize: "11px", marginTop: "2px" } }, keyLabel(k) + " · " + projName(k.project_id))),
@@ -550,13 +578,43 @@ PAGES.keys = async (root, actions) => {
         k.killed ? el("button", { class: "btn sm", onclick: () => killKey(k, false) }, "Revive") : el("button", { class: "btn k sm", onclick: () => killKey(k, true) }, "Kill"),
         can("admin") ? el("button", { class: "btn sm", title: "Edit or revoke", onclick: () => keyModal(k) }, "⋯") : null) : null));
   });
+  return table(["Key", "Agent", "Budget", ">RPM", "Status", ""], rows, { cls: "tight", empty: empty("No keys yet", "Create a key on the right and use it as the API key in any OpenAI SDK.") });
+}
+// Repaint the keys table from fresh /keys and /limits data. Leaves the rest of
+// the page alone so a just-created one-time secret stays visible.
+async function refreshKeysTable() {
+  const [k, lim] = await Promise.all([api("/keys"), soft("/limits", { data: S.limits })]);
+  S.keys = k.data; S.limits = (lim && lim.data) || [];
+  const live = S.keys.filter((x) => !x.revoked);
+  S.counts.keys = live.length;
+  S.counts.agents = new Set(live.filter((x) => x.agent).map((x) => x.project_id + "/" + x.agent)).size;
+  const host = document.getElementById("keys-table");
+  if (host) host.replaceChildren(keysTable(live));
+  const badge = document.querySelector('a[href="#keys"] .n');
+  if (badge) badge.textContent = compact(S.counts.keys);
+  const agentsBadge = document.querySelector('a[href="#agents"] .n');
+  if (agentsBadge) agentsBadge.textContent = compact(S.counts.agents);
+  const active = document.querySelector("#keys-kpis .kpi .kv");
+  const sub = document.querySelector("#keys-kpis .kpi .kd");
+  if (active) active.textContent = num(live.filter((x) => !x.killed).length);
+  if (sub) sub.textContent = `across ${new Set(live.map((x) => x.project_id)).size} projects`;
+}
+PAGES.keys = async (root, actions) => {
+  const ser = await api("/series?hours=24&by=key");
+  const live = S.keys.filter((k) => !k.revoked);
+  const killed = live.filter((k) => k.killed);
+  const lastKill = (await soft("/audit?limit=50", { data: [] })).data.find((a) => a.action === "key.kill");
+  const today = live.reduce((a, k) => a + (k.spend_today || 0), 0);
+  actions.push(el("span", { class: "m mut", style: { fontSize: "11px" } }, "stored only as SHA-256 hashes"), can("member") ? el("button", { class: "btn gr", onclick: () => document.querySelector("#nk-name")?.focus() }, "+ New key") : null);
+  const tableHost = el("div", { id: "keys-table" });
+  tableHost.append(keysTable(live));
+  const kpiCard = kpis([["Active keys", num(live.length - killed.length), `across ${new Set(live.map((k) => k.project_id)).size} projects`],
+    ["Killed", num(killed.length), lastKill ? `${keyName(lastKill.target)} · ${ago(lastKill.ts)}` : "none killed"],
+    ["Spend today", usdBig(today), "UTC day · all keys"]]);
+  kpiCard.id = "keys-kpis";
   const chart = card("Spend by key", lineChart(seriesPoints(ser, "cost", keyName), { buckets: bucketRange(ser.since, ser.now, ser.bucket_seconds), height: 140 }), { sub: "USD / hour · 24h" });
   root.append(el("div", { class: "g split" },
-    el("div", { class: "g" },
-      kpis([["Active keys", num(live.length - killed.length), `across ${new Set(live.map((k) => k.project_id)).size} projects`],
-        ["Killed", num(killed.length), lastKill ? `${keyName(lastKill.target)} · ${ago(lastKill.ts)}` : "none killed"],
-        ["Spend today", usdBig(today), "UTC day · all keys"]]),
-      card("Virtual keys", table(["Key", "Agent", "Budget", ">RPM", "Status", ""], rows, { cls: "tight", empty: empty("No keys yet", "Create a key on the right and use it as the API key in any OpenAI SDK.") })), chart),
+    el("div", { class: "g" }, kpiCard, card("Virtual keys", tableHost), chart),
     el("div", { class: "g" }, newKeyCard(), apiCard(), scopesCard(live))));
 };
 function keyModal(k) {
@@ -583,7 +641,7 @@ function newKeyCard() {
       kvr([["Daily limit", +f.daily.value ? usd(+f.daily.value) : "—"], ["Monthly limit", +f.monthly.value ? usd(+f.monthly.value) : "—"], ["Rate limit", +f.rpm.value ? f.rpm.value + " rpm" : "—"], ["Agent label", f.agent.value || "—"], ["Project", projName(f.proj.value)]])),
       { right: el("span", { class: "st ok" }, "new") }));
     form.reset(); toast("Key created; copy it now");
-    const k = await api("/keys"); S.keys = k.data;
+    try { await refreshKeysTable(); } catch (e) { if (e && e.message === "unauthorized") return; }
   } },
     el("label", {}, "Name", f.name), el("div", { class: "row2" }, el("label", {}, "Project", f.proj), el("label", {}, "Agent label", f.agent)),
     el("div", { class: "row2" }, el("label", {}, "Daily USD", f.daily), el("label", {}, "Monthly USD", f.monthly)), el("label", {}, "Rate limit (rpm)", f.rpm),
@@ -759,6 +817,9 @@ PAGES.budgets = async (root, actions, crumb, r) => {
   const days = {}; for (const p of ov.series) { const k = +new Date(p.bucket); days[k] = (days[k] || 0) + p.cost_usd; }
   const dayBuckets = bucketRange(ov.since, new Date(), 86400);
   const projDaily = S.limits.filter((l) => l.scope === "project" && l.daily_usd > 0).reduce((a, l) => a + l.daily_usd, 0);
+  const oc = await soft("/org/spend-cap", null);
+  const orgDaily = oc && oc.daily_usd > 0 ? oc.daily_usd : 0;
+  const refV = orgDaily || projDaily, refLabel = orgDaily ? "org daily cap " + usd(orgDaily, 0) + (oc.source === "config" ? " (server default)" : "") : "sum of project caps " + usd(projDaily, 0);
   root.append(el("div", { class: "g split" },
     el("div", { class: "g" },
       kpis([["Limits", num(S.limits.length), "keys, agents, projects"], ["At risk", num(atRisk.length), "≥ 75% used"], ["Blocked · 24h", num(budgetBlocks), `budget refusals · ${num(allBlocks)} blocked total`],
@@ -766,7 +827,7 @@ PAGES.budgets = async (root, actions, crumb, r) => {
       card("Limits", rows.length ? el("div", {}, rows) : empty(scope === "all" ? "No limits yet" : "No " + scope + " limits", "Cap spend per key, agent or project. Over-limit calls are refused before they reach a provider.", can("admin") ? el("button", { class: "btn gr", onclick: () => limitModal() }, "+ New limit") : null),
         { sub: "checked before every request reaches a provider", right: seg([["all", "All"], ["keys", "Keys"], ["agents", "Agents"], ["projects", "Projects"]], scope, (v) => setQuery({ scope: v === "all" ? "" : v })) }),
       card("Org spend vs daily limit", lineChart(dayBuckets.map((b) => ({ bucket: b, name: "spend", value: days[b] || 0 })).filter(() => ov.range.requests > 0),
-        { buckets: dayBuckets, bucketSeconds: 86400, height: 150, ref: projDaily || 0, refLabel: "project daily caps " + usd(projDaily, 0) }), { sub: "last 14 days" })),
+        { buckets: dayBuckets, bucketSeconds: 86400, height: 150, ref: refV || 0, refLabel }), { sub: "last 14 days" }), orgCapCard(oc)),
     el("div", { class: "g" },
       card("Alerts webhook", el("div", { class: "pad" }, el("div", { class: "mut", style: { fontSize: "12px", marginBottom: "8px" } }, "Budget threshold webhook (Slack-compatible)"),
         el("div", { class: "copyline" }, el("span", {}, alerts.configured ? "https://" + alerts.webhook_host + "/…" : "Not configured")),
@@ -780,7 +841,122 @@ PAGES.budgets = async (root, actions, crumb, r) => {
         kvr([["Budget sync", S.cfg.budgets && S.cfg.budgets.sync_interval !== "0s" ? "every " + S.cfg.budgets.sync_interval : "single instance"]]), el("div", { class: "kvr" }, el("span", {}, "Budget-aware downgrades"), SOON()))))));
 };
 
-// ---------- policies & kill switch ----------
+// ---------- measured performance (from request logs only) ----------
+function succCell(x) {
+  if (!x || !x.attempts) return el("span", { class: "mut", title: "No upstream attempts in the window" }, "—");
+  return el("span", { title: `${num(x.ok)} of ${num(x.attempts)} upstream attempts succeeded`, class: x.success_pct >= 99 ? "grn" : x.success_pct >= 90 ? "amb" : "red" }, x.success_pct.toFixed(1) + "%");
+}
+function latencyCard(perf, n) {
+  const rows = perf.models.slice(0, n).map((m) => el("tr", {}, el("td", {}, modelChip(m.model)), el("td", { class: "r m" }, ms(m.p50_ms)), el("td", { class: "r m mut" }, ms(m.p95_ms)), el("td", { class: "r m mut" }, num(m.requests))));
+  return card("Latency by model", table(["Model", ">p50", ">p95", ">Measured"], rows, { cls: "tight", empty: empty("No successful requests in 24h", "Latency appears once requests are served; nothing is estimated.") }), { sub: "measured · successful non-cached requests · 24h" });
+}
+function successCard(perf) {
+  const rows = perf.providers.map((x) => el("tr", {}, el("td", {}, x.provider), el("td", { class: "r m" }, succCell(x)), el("td", { class: "r m mut" }, `${num(x.ok)} / ${num(x.attempts)}`)));
+  return card("Success by provider", table(["Provider", ">Success", ">OK / attempts"], rows, { cls: "tight", empty: empty("No upstream attempts in 24h") }), { sub: "per upstream attempt, incl. failed failover hops" });
+}
+
+// ---------- org-wide spend cap ----------
+function orgCapCard(oc) {
+  if (!oc) return null;
+  const set = oc.daily_usd > 0 || oc.monthly_usd > 0;
+  const bar = (spent, capv, per) => capv > 0 ? el("div", { class: "kvr", style: { display: "block" } }, el("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: "6px" } }, el("span", {}, per), el("span", { class: "m" }, `${usd(spent)} / ${usd(capv)}`)), pb(pct(spent, capv), pbClass(pct(spent, capv)))) : null;
+  const edit = () => {
+    const d = el("input", { class: "inp", type: "number", min: 0, step: "0.01", value: oc.source === "org" ? oc.daily_usd || "" : "", placeholder: "no daily cap" });
+    const m = el("input", { class: "inp", type: "number", min: 0, step: "0.01", value: oc.source === "org" ? oc.monthly_usd || "" : "", placeholder: "no monthly cap" });
+    const errBox = el("div", { class: "red", style: { fontSize: "12.5px" } });
+    const capValue = (input, label) => {
+      if (input.validity && (input.validity.badInput || input.validity.rangeUnderflow)) {
+        const e = new Error(label + " must be a number that is 0 or greater"); e.client = true; throw e;
+      }
+      const raw = String(input.value).trim();
+      if (raw === "") return 0;
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0) { const e = new Error(label + " must be a number that is 0 or greater"); e.client = true; throw e; }
+      return n;
+    };
+    const save = async (clear) => {
+      errBox.textContent = "";
+      try {
+        const body = clear ? { daily_usd: 0, monthly_usd: 0 } : { daily_usd: capValue(d, "Daily cap"), monthly_usd: capValue(m, "Monthly cap") };
+        await api("/org/spend-cap", { method: "PUT", body });
+        closeModal(); toast(clear ? "Org cap cleared" : "Org cap saved"); render();
+      } catch (e) {
+        if (e && e.message === "unauthorized") return;
+        const msg = (e && e.message) || "Could not save the org cap";
+        errBox.textContent = msg;
+        if (e && e.client) toast(msg, true);
+      }
+    };
+    modal("Org spend cap", el("form", { class: "form", novalidate: true, onsubmit: (ev) => { ev.preventDefault(); save(false); } },
+      el("div", { class: "hint" }, "Optional. Caps total spend across every project in this organization. Requests over the cap get 429 budget_exceeded, like any other budget. Changes are audit-logged."),
+      el("label", {}, "Daily cap (USD, resets 00:00 UTC)", d), el("label", {}, "Monthly cap (USD, resets on the 1st UTC)", m), errBox,
+      el("div", { class: "acts2" }, el("button", { class: "btn gr", type: "submit" }, "Save"), oc.source === "org" ? el("button", { class: "btn k", type: "button", onclick: () => save(true) }, "Remove cap") : null, el("button", { class: "btn", type: "button", onclick: closeModal }, "Cancel"))));
+  };
+  return card("Org spend cap", el("div", {}, set ? [bar(oc.daily_spent, oc.daily_usd, "Today"), bar(oc.monthly_spent, oc.monthly_usd, "This month")]
+    : el("div", { class: "empty" }, el("b", {}, "No org-wide cap"), el("div", {}, `Charts show the sum of project caps instead (${usd(oc.project_caps.daily_usd, 0)}/day · ${usd(oc.project_caps.monthly_usd, 0)}/month).`)),
+    kvr([["Source", oc.source === "org" ? "set for this org" : oc.source === "config" ? "server default (budgets.org_*_usd)" : "—"], ["Over cap", "429 budget_exceeded"]])),
+    { sub: "optional · daily and monthly", right: can("admin") ? el("button", { class: "btn sm", onclick: edit }, set && oc.source === "org" ? "Edit" : "Set cap") : null });
+}
+
+// ---------- kill switch page ----------
+async function setGlobalKill(kill) {
+  if (kill && !confirm("Engage the GLOBAL kill switch? Every request in this organization gets 403 and in-flight streams are aborted until you release it.")) return;
+  const r = await api("/kill-switch", { method: "POST", body: { scope: "global", killed: kill } });
+  S.globalKill = kill; toast(kill ? `Global kill switch engaged · ${r.aborted_inflight} in-flight aborted` : "Global kill switch released"); render();
+}
+async function setScopedKill(scope, id, kill, label) {
+  if (kill && !confirm(`Kill ${label}? Its requests get 403 and in-flight streams are aborted.`)) return;
+  await api("/kill-switch", { method: "POST", body: { scope, scope_id: id, killed: kill } }); toast(kill ? label + " killed" : label + " revived"); render();
+}
+const KILL_ACTION = { "killswitch.engage": "Engaged", "killswitch.release": "Released", "key.kill": "Killed key", "key.unkill": "Revived key", "project.kill": "Killed project", "project.unkill": "Revived project" };
+function killTargetLabel(a) {
+  if (a.action.startsWith("key.")) return keyName(a.target);
+  if (a.action.startsWith("project.")) return "project " + projName(a.target);
+  if (a.target === "global") return "global (whole org)";
+  const [sc, ...rest] = a.target.split(":"); const id = rest.join(":");
+  if (sc === "agent") { const [p, ag] = id.split("/"); return `agent ${ag} @ ${projName(p)}`; }
+  return sc + " " + id;
+}
+PAGES.kill = async (root, actions) => {
+  const [ks, cust] = await Promise.all([api("/kill-switch"), soft("/customers", { data: [] })]);
+  S.globalKill = ks.global;
+  const isMember = can("member");
+  const live = S.keys.filter((k) => !k.revoked);
+  const killedAgents = new Set(ks.switches.filter((x) => x.scope === "agent").map((x) => x.scope_id));
+  const killedCust = new Set(ks.switches.filter((x) => x.scope === "customer").map((x) => x.scope_id));
+  const g = ks.global_switch;
+  const big = el("div", { class: "card killbox killglobal" + (ks.global ? " on" : "") },
+    el("div", { class: "kh" }, el("span", { class: "ki" }, svgIconSmall("kill")), el("b", { style: { fontWeight: 500 } }, "Global kill switch"), ks.global ? st("bk", "ENGAGED") : st("ok", "Traffic flowing")),
+    el("div", { class: "big" }, ks.global ? "Every request in this organization is refused." : "Stop every AI request in this organization, now."),
+    el("div", { class: "t2", style: { fontSize: "12.5px" } }, ks.global ? `Engaged ${ago(g.killed_at)}${g.actor ? " by " + g.actor : ""}. New requests get 403 org_killed.` : "New requests get 403 and in-flight streams are aborted. Release it here or from ⌘K."),
+    el("div", { style: { marginTop: "16px" } }, isMember ? el("button", { class: "btn bigkill " + (ks.global ? "gr" : "kf"), onclick: () => setGlobalKill(!ks.global) }, svgIconSmall("kill"), ks.global ? "Release global kill switch" : "STOP ALL TRAFFIC") : el("span", { class: "mut" }, "Members and above can use the kill switch.")));
+  const keyRows = live.map((k) => el("tr", {}, el("td", {}, k.name, el("div", { class: "m mut", style: { fontSize: "11px" } }, keyLabel(k) + " · " + projName(k.project_id))), el("td", { class: "m" }, k.agent || "—"),
+    el("td", {}, k.killed ? st("bk", "Killed") : st("ok", "Active")),
+    el("td", { class: "r" }, isMember ? (k.killed ? el("button", { class: "btn sm", onclick: () => killKey(k, false) }, "Revive") : el("button", { class: "btn k sm", onclick: () => killKey(k, true) }, "Kill")) : null)));
+  const agents = [...new Map(live.filter((k) => k.agent).map((k) => [k.project_id + "/" + k.agent, { id: k.project_id + "/" + k.agent, name: k.agent, project: k.project_id }])).values()];
+  for (const id of killedAgents) if (!agents.find((a) => a.id === id)) { const [p, n] = id.split("/"); agents.push({ id, name: n, project: p }); }
+  const agentRows = agents.map((a) => { const on = killedAgents.has(a.id); return el("tr", {}, el("td", { class: "m" }, a.name), el("td", {}, projName(a.project)), el("td", {}, on ? st("bk", "Killed") : st("ok", "Running")),
+    el("td", { class: "r" }, isMember ? el("button", { class: "btn sm" + (on ? "" : " k"), onclick: () => setScopedKill("agent", a.id, !on, "agent " + a.name) }, on ? "Revive" : "Kill") : null)); });
+  const custIds = [...new Set([...(cust.data || []).map((c) => c.customer_id), ...killedCust])];
+  const custInput = el("input", { class: "inp m", placeholder: "customer id", style: { flex: 1 } });
+  const custRows = custIds.map((c) => { const on = killedCust.has(c); return el("tr", {}, el("td", { class: "m" }, c), el("td", {}, on ? st("bk", "Killed") : st("ok", "Active")),
+    el("td", { class: "r" }, isMember ? el("button", { class: "btn sm" + (on ? "" : " k"), onclick: () => setScopedKill("customer", c, !on, "customer " + c) }, on ? "Revive" : "Kill") : null)); });
+  const custAdd = isMember ? el("form", { style: { display: "flex", gap: "8px", padding: "10px 16px", borderTop: "1px solid var(--ln)" }, onsubmit: (e) => { e.preventDefault(); const v = custInput.value.trim(); if (v) setScopedKill("customer", v, true, "customer " + v); } }, custInput, el("button", { class: "btn k sm", type: "submit" }, "Kill customer")) : null;
+  const hist = ks.history.map((a) => el("div", { class: "tl" }, el("span", { class: "d " + (/(engage|\.kill)$/.test(a.action) ? "r" : "") }),
+    el("div", {}, el("div", { class: "tt" }, (KILL_ACTION[a.action] || a.action) + " · " + killTargetLabel(a)), el("div", { class: "ts" }, (a.actor_email || (a.actor_type === "token" ? "admin token" : a.actor_type)) + " · " + new Date(a.ts).toLocaleString())),
+    el("span", { class: "tm" }, ago(a.ts))));
+  const nKilled = live.filter((k) => k.killed).length + killedAgents.size + killedCust.size + S.projects.filter((p) => p.killed).length;
+  root.append(el("div", { class: "g split" },
+    el("div", { class: "g" }, big,
+      kpis([["Global", ks.global ? el("span", { class: "red" }, "ON") : "off", ks.global ? "all traffic refused" : "traffic flowing"], ["Killed now", num(nKilled), "keys, agents, customers, projects"], ["Events", num(ks.history.length), "from the audit log"]]),
+      card("Keys", table(["Key", "Agent", "Status", ""], keyRows, { cls: "tight", empty: empty("No keys yet") }), { sub: `${live.filter((k) => k.killed).length} killed` }),
+      card("Agents", table(["Agent", "Project", "Status", ""], agentRows, { cls: "tight", empty: empty("No labelled agents", "Give a key an agent label to kill all of that agent's traffic at once.") }), { sub: "kills every key with that agent label, including keys created later" }),
+      card("Customers", el("div", {}, table(["Customer", "Status", ""], custRows, { cls: "tight", empty: empty("No customers seen yet", "Requests attributed to a customer show up here.") }), custAdd), { sub: "blocks requests attributed to the customer" })),
+    el("div", { class: "g" }, card("History", hist.length ? el("div", { class: "timeline" }, hist) : empty("No kill-switch events yet", "Every kill and revive is recorded in the append-only audit log."), { sub: "from the audit log" }),
+      card("How it works", el("div", { class: "pad t2", style: { fontSize: "12.5px", lineHeight: 1.6 } }, "Kills apply instantly to new requests (403) and abort matching in-flight requests on this instance. Key and project kills are also swept on other replicas; projects are killed from ", el("a", { href: "#policies", class: "grn" }, "Policies"), ".")))));
+};
+
+// ---------- policies ----------
 const CAT_LABEL = { email: "Emails", phone: "Phone numbers", credit_card: "Cards (Luhn)", iban: "IBAN", ssn: "SSN", sin: "SIN", secret: "API keys & secrets" };
 const FEATURES = [["background", "Background responses"], ["builtin_tools", "Hosted web / file search"], ["n", "n > 1"], ["store", "Stored responses"]];
 function ruleText(m) {
@@ -827,7 +1003,7 @@ PAGES.policies = async (root, actions, crumb, r) => {
     el("div", { class: "big" }, proj.killed ? "Every request in this project is refused." : "Stop every request in this project, now."),
     el("div", { class: "t2", style: { fontSize: "12.5px" } }, "New requests get 403. In-flight streams are aborted here, and on other replicas at their next budget sync."),
     el("div", { style: { display: "flex", gap: "8px", marginTop: "14px" } }, isMember ? (proj.killed ? el("button", { class: "btn gr", onclick: () => killProj(false) }, "Revive project") : el("button", { class: "btn kf", onclick: () => killProj(true) }, "Kill project")) : el("span", { class: "mut" }, "Members and above can use the kill switch."),
-      isMember ? el("a", { class: "btn", href: "#keys" }, "Kill one key…") : null));
+      isMember ? el("a", { class: "btn", href: "#kill" }, "Kill a key, agent or customer…") : null));
   const ordered = rules.data.slice().sort((a, b) => a.priority - b.priority);
   const ruleList = card("Routing rules", ordered.length ? el("div", { class: "rules" }, ordered.map((x, i) => el("div", { class: "rr", style: { opacity: x.enabled ? 1 : 0.5, cursor: isAdmin ? "pointer" : "default" }, onclick: () => isAdmin && ruleModal(x) },
     el("span", { class: "ix" }, i + 1), el("span", {}, ruleText(x.match), el("span", { class: "mut", style: { fontSize: "11px", marginLeft: "8px" } }, x.name + (x.project_id ? " · " + projName(x.project_id) : ""))),
@@ -872,6 +1048,8 @@ function modelListModal(p) {
 // ---------- providers ----------
 PAGES.providers = async (root, actions) => {
   const [p, pk, ser, auto, recent, P] = await Promise.all([api("/providers"), soft("/provider-keys", { data: [] }), api("/series?hours=24&by=provider"), soft("/routing/auto", { enabled: false, models: [] }), api("/logs?limit=500"), pricing()]);
+  const perf = await soft("/performance?hours=24", { models: [], providers: [] });
+  const succ = Object.fromEntries(perf.providers.map((x) => [x.provider, x]));
   const by = {}; for (const x of ser.series) { const a = (by[x.name] ||= { req: 0, cost: 0, b: {} }); a.req += x.requests; a.cost += x.cost_usd; a.b[+new Date(x.bucket)] = (a.b[+new Date(x.bucket)] || 0) + x.requests; }
   const buckets = bucketRange(ser.since, ser.now, ser.bucket_seconds).slice(-12);
   const keysFor = (name) => pk.data.filter((k) => k.provider === name);
@@ -882,6 +1060,7 @@ PAGES.providers = async (root, actions) => {
     return el("tr", {}, el("td", {}, el("span", { style: { display: "flex", alignItems: "center", gap: "10px" } }, el("span", { class: "mono", style: { width: "24px", height: "24px", background: MONO_BG[hash(x.name) % MONO_BG.length] } }, x.name[0].toUpperCase()),
       el("span", {}, el("div", {}, x.name, el("span", { class: "pill", style: { marginLeft: "8px", fontSize: "9.5px" } }, x.type)), el("div", { class: "m mut", style: { fontSize: "11px" } }, x.base_url)))),
       el("td", { class: "r m" }, num(s.req)), el("td", {}, el("span", { style: { display: "inline-flex", alignItems: "center", gap: "10px" } }, spark(buckets.map((b) => s.b[b] || 0), !s.req), el("span", { class: "m", style: { fontSize: "12px" } }, usd(s.cost)))),
+      el("td", { class: "r m" }, succCell(succ[x.name])),
       el("td", {}, st("mu", x.key_source === "stored" ? `Key · AES-256 · ${ks.length}` : x.key_source === "env" ? "Key · env var" : x.key_source || "no key", ks.map((k) => k.label + " " + k.hint).join(", ") || undefined)));
   });
   const keyRows = pk.data.map((k) => el("div", { class: "kvr" }, el("span", {}, `${k.provider} · ${k.label || "key"}`), el("span", { style: { display: "flex", gap: "8px", alignItems: "center" } }, k.hint,
@@ -897,7 +1076,8 @@ PAGES.providers = async (root, actions) => {
     el("div", { class: "g" },
       kpis([["Connected", num(p.data.length), `${pk.data.length} stored key${pk.data.length === 1 ? "" : "s"} · ${p.data.filter((x) => x.key_source === "env").length} from env`],
         ["Failovers", num(failovers.length), `in the last ${num(recent.data.length)} requests`], ["Models priced", num(Object.keys(P).length + (P._patterns || []).length), `entries · via ${routes.length + (auto.enabled ? 1 : 0)} alias${routes.length + (auto.enabled ? 1 : 0) === 1 ? "" : "es"}`]]),
-      card("Providers", table(["Provider", ">Requests 24h", "Spend 24h", "Credentials"], rows, { cls: "tight", empty: empty("No providers configured") }), { sub: "OpenAI-compatible · translated both ways", right: can("admin") ? el("button", { class: "btn sm", onclick: connect }, "+ Connect") : null }),
+      card("Providers", table(["Provider", ">Requests 24h", "Spend 24h", ">Success 24h", "Credentials"], rows, { cls: "tight", empty: empty("No providers configured") }), { sub: "OpenAI-compatible · translated both ways", right: can("admin") ? el("button", { class: "btn sm", onclick: connect }, "+ Connect") : null }),
+      latencyCard(perf, 8),
       card("Aliases with ordered failover", routes.length || auto.enabled ? el("div", {}, routes.map(([a, t]) => el("div", { class: "alias" }, el("span", { class: "an" }, a), el("span", { class: "flow" }, "→", t.map((m, i) => [i ? el("span", {}, "then") : null, el("span", { class: "mdl" }, modelChip(m))])))),
         auto.enabled ? el("div", { class: "alias" }, el("span", { class: "an" }, auto.alias || "auto"), el("span", { class: "flow" }, "→ cheapest model meeting the difficulty tier · " + auto.models.length + " candidates")) : null)
         : empty("No aliases", "Add routes in the config file to give clients stable names like smart or cheap."), { sub: "config: routes" }),
@@ -966,7 +1146,7 @@ PAGES.team = async (root) => {
   const invite = can("admin") ? el("form", { style: { display: "flex", gap: "8px", padding: "12px 16px", borderBottom: "1px solid var(--ln)" }, onsubmit: async (e) => {
     e.preventDefault(); const r = await api("/invites", { method: "POST", body: { email: email.value, role: role.value } });
     const link = location.origin + "/ui/#invite=" + r.token;
-    modal("Invite created", el("div", { class: "form" }, el("div", { class: "t2" }, `Send this link to ${r.invite ? r.invite.email : email.value}. It works once and expires in ${S.cfg.auth ? S.cfg.auth.invite_ttl : "7 days"}.`), el("div", { class: "copyline g" }, el("span", {}, link), el("button", { class: "btn sm", onclick: () => copy(link, "Invite link") }, "Copy")),
+    modal("Invite created", el("div", { class: "form" }, el("div", { class: "t2" }, `Send this link to ${r.invite ? r.invite.email : email.value}. It works once and expires in ${S.cfg.auth ? goDuration(S.cfg.auth.invite_ttl) : "7 days"}.`), el("div", { class: "copyline g" }, el("span", {}, link), el("button", { class: "btn sm", onclick: () => copy(link, "Invite link") }, "Copy")),
       el("div", { class: "acts2" }, el("button", { class: "btn", onclick: () => { closeModal(); render(); } }, "Done"))));
   } }, email, role, el("button", { class: "btn gr", type: "submit" }, "Invite")) : null;
   const ROLE_ST = { owner: "ok", admin: "bl", member: "mu", viewer: "mu" };
@@ -1226,7 +1406,7 @@ PAGES.audit = async (root, actions, crumb, r) => {
   for (const k of ["actor", "action", "since", "until"]) if (q.get(k)) params.set(k, q.get(k));
   const a = await api("/audit?" + params);
   const f = { actor: el("input", { class: "inp", value: q.get("actor") || "", placeholder: "actor email" }),
-    action: el("select", { class: "inp" }, [["", "All actions"], ["key.", "Keys"], ["limit.", "Budgets"], ["project.", "Projects & kill switch"], ["member.", "Members & roles"], ["invite", "Invites"], ["mcp.", "MCP"], ["markup.", "Markups"], ["guardrails.", "Guardrails"], ["routing_rule.", "Routing"], ["billing.", "Billing"], ["auth.", "Sign-ins"]].map(([v, t]) => el("option", { value: v, selected: v === (q.get("action") || "") }, t))),
+    action: el("select", { class: "inp" }, [["", "All actions"], ["key.", "Keys"], ["limit.", "Budgets"], ["killswitch.", "Kill switch (global, agent, customer)"], ["project.", "Projects & kill switch"], ["org.", "Org & spend cap"], ["member.", "Members & roles"], ["invite", "Invites"], ["mcp.", "MCP"], ["markup.", "Markups"], ["guardrails.", "Guardrails"], ["routing_rule.", "Routing"], ["billing.", "Billing"], ["auth.", "Sign-ins"]].map(([v, t]) => el("option", { value: v, selected: v === (q.get("action") || "") }, t))),
     since: el("input", { class: "inp", type: "date", value: q.get("since") || "" }), until: el("input", { class: "inp", type: "date", value: q.get("until") || "" }) };
   const apply = (e) => { e.preventDefault(); setQuery({ actor: f.actor.value.trim(), action: f.action.value, since: f.since.value, until: f.until.value, p: "" }); };
   const filters = el("form", { class: "card", style: { display: "flex", gap: "8px", padding: "10px 12px", alignItems: "center", flexWrap: "wrap" }, onsubmit: apply },

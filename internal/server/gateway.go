@@ -185,6 +185,20 @@ func (s *Server) begin(w http.ResponseWriter, r *http.Request, endpoint string) 
 		return nil
 	}
 	rs.log.CustomerID = cust
+	if hit, err := s.store.KillHit(r.Context(), proj.OrgID, agentScopeID(key), cust); err != nil {
+		s.log.Error("kill switch check failed", "err", err, "request_id", rs.log.ID)
+		s.reject(w, rs, http.StatusInternalServerError, "server_error", "internal_error", "kill switch check failed", 0)
+		return nil
+	} else if hit != "" {
+		msg := map[string]string{
+			store.KillGlobal:   "OpenGate: every request in this organization is stopped by the global kill switch.",
+			store.KillAgent:    fmt.Sprintf("OpenGate: agent %q has been disabled by the kill switch.", key.Agent),
+			store.KillCustomer: fmt.Sprintf("OpenGate: customer %q has been disabled by the kill switch.", cust),
+		}[hit]
+		code := map[string]string{store.KillGlobal: "org_killed", store.KillAgent: "agent_killed", store.KillCustomer: "customer_killed"}[hit]
+		s.reject(w, rs, http.StatusForbidden, "permission_error", code, msg, 0)
+		return nil
+	}
 	if !s.applyRequestGuard(w, rs) {
 		return nil
 	}
@@ -314,6 +328,7 @@ func (s *Server) attemptLoop(ctx context.Context, rs *reqState, targets []target
 		tgt, err := s.target(ctx, rs.proj.OrgID, t)
 		if err != nil {
 			lastErr = err
+			rs.log.Hops = append(rs.log.Hops, store.Hop{Provider: t.Provider, Model: t.Model, StartedAt: time.Now().UTC(), Error: "skipped: no usable provider credentials"})
 			continue
 		}
 		rs.log.Provider, rs.log.ProviderModel = t.Provider, t.Model
@@ -329,7 +344,9 @@ func (s *Server) attemptLoop(ctx context.Context, rs *reqState, targets []target
 				}
 			}
 			rs.log.Attempts++
+			hopStart := time.Now()
 			err := do(tgt)
+			rs.log.Hops = append(rs.log.Hops, hopFor(t, hopStart, err, ctx.Err() != nil))
 			if err == nil {
 				s.metrics.attempts.Inc(t.Provider, "ok")
 				return nil
@@ -356,6 +373,25 @@ func (s *Server) attemptLoop(ctx context.Context, rs *reqState, targets []target
 		lastErr = errors.New("no targets available")
 	}
 	return lastErr
+}
+
+// hopFor describes one finished upstream attempt for the request log.
+// Non-upstream errors may carry internal detail, so only a generic message
+// is stored for them.
+func hopFor(t targetSpec, start time.Time, err error, cancelled bool) store.Hop {
+	h := store.Hop{Provider: t.Provider, Model: t.Model, StartedAt: start.UTC(), LatencyMS: time.Since(start).Milliseconds()}
+	var ue *provider.UpstreamError
+	switch {
+	case err == nil:
+		h.Status = http.StatusOK
+	case cancelled:
+		h.Status, h.Error = 499, "aborted (client gone or kill switch)"
+	case errors.As(err, &ue):
+		h.Status, h.Error = ue.Status, ue.Error()
+	default:
+		h.Error = "gateway error (see server log)"
+	}
+	return h
 }
 
 // writeUpstreamFailure maps a final error onto the response and log.
@@ -392,7 +428,7 @@ func (s *Server) writeUpstreamFailure(ctx context.Context, w http.ResponseWriter
 // withInflight registers the request for the kill switch.
 func (s *Server) withInflight(rs *reqState) (context.Context, func()) {
 	ctx, cancel := context.WithCancelCause(rs.r.Context())
-	s.inflight.add(rs.log.ID, flight{keyID: rs.key.ID, projectID: rs.proj.ID, cancel: cancel})
+	s.inflight.add(rs.log.ID, flight{keyID: rs.key.ID, projectID: rs.proj.ID, orgID: rs.proj.OrgID, agentID: agentScopeID(rs.key), customerID: rs.log.CustomerID, cancel: cancel})
 	s.metrics.inflight.Add(1)
 	// Close the check-to-register window: a kill that landed after begin()
 	// read the flags but before registration is caught here.
@@ -406,6 +442,14 @@ func (s *Server) withInflight(rs *reqState) (context.Context, func()) {
 		s.metrics.inflight.Add(-1)
 		cancel(nil)
 	}
+}
+
+// agentScopeID is project_id/agent for keys with an agent label, else "".
+func agentScopeID(k *store.VirtualKey) string {
+	if k.Agent == "" {
+		return ""
+	}
+	return k.ProjectID + "/" + k.Agent
 }
 
 func estimateTokens(chars int) int { return (chars + 3) / 4 }

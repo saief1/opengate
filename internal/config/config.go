@@ -287,6 +287,11 @@ type BudgetsConfig struct {
 	// SyncInterval re-reads spend from the database so replicas sharing
 	// PostgreSQL converge (default 5s for PostgreSQL, 0 for SQLite).
 	SyncInterval time.Duration `yaml:"sync_interval"`
+	// OrgDailyUSD / OrgMonthlyUSD are optional org-wide spend caps applied
+	// to every organization that has not set its own cap through the admin
+	// API (0 = none). Over-cap requests get 429 budget_exceeded.
+	OrgDailyUSD   float64 `yaml:"org_daily_usd"`
+	OrgMonthlyUSD float64 `yaml:"org_monthly_usd"`
 }
 
 // RateLimitConfig selects the rate limit backend.
@@ -527,6 +532,9 @@ func (c *Config) Normalize() error {
 	}
 	if c.Budgets.SyncInterval == 0 && (strings.HasPrefix(c.Database, "postgres://") || strings.HasPrefix(c.Database, "postgresql://")) {
 		c.Budgets.SyncInterval = 5 * time.Second
+	}
+	if c.Budgets.OrgDailyUSD < 0 || c.Budgets.OrgMonthlyUSD < 0 {
+		return fmt.Errorf("budgets.org_daily_usd and budgets.org_monthly_usd must not be negative")
 	}
 	if c.Budgets.SyncInterval < 0 {
 		c.Budgets.SyncInterval = 0

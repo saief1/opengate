@@ -404,6 +404,7 @@ const (
 	ScopeKey     = "key"
 	ScopeAgent   = "agent"   // scope_id = project_id + "/" + agent label
 	ScopeProject = "project" // scope_id = project_id
+	ScopeOrg     = "org"     // scope_id = org_id (org-wide spend cap)
 )
 
 // Limit holds spend (USD) and rate limits for a scope. Zero means unlimited.
@@ -419,13 +420,13 @@ type Limit struct {
 
 // ValidScope reports whether scope is a known kind.
 func ValidScope(scope string) bool {
-	return scope == ScopeKey || scope == ScopeAgent || scope == ScopeProject
+	return scope == ScopeKey || scope == ScopeAgent || scope == ScopeProject || scope == ScopeOrg
 }
 
 // UpsertLimit creates or replaces a limit.
 func (s *Store) UpsertLimit(ctx context.Context, l Limit) error {
 	if !ValidScope(l.Scope) || l.ScopeID == "" {
-		return errors.New("limit needs scope (key|agent|project) and scope_id")
+		return errors.New("limit needs scope (key|agent|project|org) and scope_id")
 	}
 	if l.DailyUSD < 0 || l.MonthlyUSD < 0 || l.TotalUSD < 0 || l.RPM < 0 {
 		return errors.New("limits must not be negative")

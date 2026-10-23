@@ -83,7 +83,7 @@ func (s *Server) observe(l *store.RequestLog) {
 
 func isGatewayRejection(code string) bool {
 	switch code {
-	case "budget_exceeded", "rate_limit_exceeded", "key_killed", "project_killed", "killed", "killed_mid_stream",
+	case "budget_exceeded", "rate_limit_exceeded", "key_killed", "project_killed", "org_killed", "agent_killed", "customer_killed", "killed", "killed_mid_stream",
 		"model_not_allowed", "max_tokens_exceeded", "guardrail_blocked", "prompt_injection":
 		return true
 	}

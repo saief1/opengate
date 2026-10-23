@@ -5,6 +5,21 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] (features-v3)
 
+### Control and measured performance (design-josh)
+- **Kill switch page** (sidebar *Kill switch*): a global org-wide kill (`403 org_killed`), per-key, per-agent
+  (`agent_killed`, covers keys created later) and per-customer (`customer_killed`) kills, and a history drawn from
+  the append-only audit log. `GET/POST /admin/api/kill-switch` (member role; aborts matching in-flight requests).
+  ⌘K palette actions engage/release the global switch.
+- **Plan & billing** has its own *Account* sidebar section, separate from Settings.
+- **Measured performance**: `GET /admin/api/performance` returns p50/p95 latency per serving model and success % per
+  provider, computed only from request logs; shown on Providers and Overview. Nothing unmeasured is displayed.
+- **Failover hops**: every upstream attempt (provider, model, status, latency, error) is stored with the request
+  log (`hops`) and shown as a hop timeline in request detail.
+- **Org-wide spend cap** (optional): `budgets.org_daily_usd` / `budgets.org_monthly_usd` server defaults,
+  `GET/PUT /admin/api/org/spend-cap` per org (audit-logged as `org.spend_cap.*`), enforced as `429 budget_exceeded`
+  like every other budget, editable on the Budgets page. Charts without an org cap label their line
+  "sum of project caps".
+
 ### Live dashboard and demo site
 - `GET /admin/api/stream` (Server-Sent Events, same auth and roles as the admin API, scoped to the caller's org):
   new request log rows (bodies stripped), MCP calls, budget alerts, kill-switch changes and a spend tick every 10s.

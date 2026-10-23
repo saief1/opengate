@@ -25,13 +25,19 @@ schemas = {
     "KeyCreated": obj({"key": {"type": "string", "description": "Plaintext og-... key, shown once"}, "virtual_key": S("VirtualKey")}),
     "KeyPatch": obj({"allowed_models": arr(s), "denied_models": arr(s), "max_tokens": i, "customer_id": s}),
     "LimitValues": obj({"daily_usd": n, "monthly_usd": n, "total_usd": n, "rpm": i}),
-    "Limit": obj({"scope": {"type": "string", "enum": ["key", "agent", "project"]}, "scope_id": s, "daily_usd": n, "monthly_usd": n,
+    "Limit": obj({"scope": {"type": "string", "enum": ["key", "agent", "project"], "description": "org caps are managed via /org/spend-cap"}, "scope_id": s, "daily_usd": n, "monthly_usd": n,
                   "total_usd": n, "rpm": i}, ["scope", "scope_id"]),
     "RequestLog": obj({"id": s, "ts": {"type": "string", "format": "date-time"}, "endpoint": s, "project_id": s, "key_id": s, "agent": s,
                        "model": s, "provider": s, "provider_model": s, "status": i, "prompt_tokens": i, "completion_tokens": i,
                        "cached_tokens": i, "cost_usd": n, "billed_usd": n, "latency_ms": i, "stream": b, "customer_id": s,
-                       "guard": s, "guard_action": s, "cache_hit": b, "usage_estimated": b, "error": s,
+                       "guard": s, "guard_action": s, "cache_hit": b, "usage_estimated": b, "error": s, "attempts": i,
+                       "hops": {"type": "array", "description": "Every upstream attempt in order (detail endpoint only)", "items": S("Hop")},
                        "request_body": {"type": "string", "description": "Only when the project logs bodies"}, "response_body": s}),
+    "Hop": obj({"provider": s, "model": s, "status": {"type": "integer", "description": "Provider HTTP status; 0 = no response"}, "latency_ms": i,
+                "error": s, "started_at": {"type": "string", "format": "date-time"}}),
+    "KillSwitch": obj({"scope": {"type": "string", "enum": ["global", "agent", "customer"]}, "scope_id": s, "killed_at": {"type": "string", "format": "date-time"}, "actor": s}),
+    "OrgSpendCap": obj({"daily_usd": n, "monthly_usd": n, "source": {"type": "string", "enum": ["org", "config", ""], "description": "org = set via API, config = server default, empty = no org cap"},
+                        "daily_spent": n, "monthly_spent": n, "project_caps": obj({"daily_usd": n, "monthly_usd": n})}),
     "ProviderKey": obj({"id": s, "provider": s, "label": s, "hint": s, "created_at": {"type": "string", "format": "date-time"}}),
     "RoutingRule": obj({"id": s, "name": s, "priority": i, "enabled": b, "project_id": s,
                         "match": obj({"models": arr(s), "min_prompt_tokens": i, "max_prompt_tokens": i, "tags": arr(s), "headers": {"type": "object", "additionalProperties": s},
@@ -116,6 +122,19 @@ r("POST", "/admin/api/keys/{id}/unkill", "Keys", "Re-enable", "member")
 r("GET", "/admin/api/limits", "Budgets", "Limits with current spend", resp=listOf(S("Limit")))
 r("PUT", "/admin/api/limits", "Budgets", "Create or replace a limit", None, S("Limit"), S("Limit"))
 r("DELETE", "/admin/api/limits", "Budgets", "Delete a limit (?scope=&scope_id=)")
+r("GET", "/admin/api/org/spend-cap", "Budgets", "Optional org-wide daily/monthly spend cap, current spend and the sum of project caps", resp=S("OrgSpendCap"))
+r("PUT", "/admin/api/org/spend-cap", "Budgets", "Set the org-wide cap (both 0 clears it). Over-cap requests get 429 budget_exceeded. Audit-logged.", None, obj({"daily_usd": n, "monthly_usd": n}), S("OrgSpendCap"))
+# Live
+r("GET", "/admin/api/stream", "Live", "Server-Sent Events feed of the caller's org: request log rows (bodies stripped), MCP calls, budget alerts, kill-switch changes and a spend tick every 10s")
+r("POST", "/admin/api/demo/try", "Live", "Demo deployments only: send one test request through a demo virtual key and return its routing result", "member", obj({"model": s, "prompt": s}))
+# Kill switch
+r("GET", "/admin/api/kill-switch", "Kill switch", "Global, per-agent and per-customer kill switches plus kill history from the audit log",
+  resp=obj({"global": b, "global_switch": S("KillSwitch"), "switches": arr(S("KillSwitch")), "history": arr(S("AuditEntry"))}))
+r("POST", "/admin/api/kill-switch", "Kill switch", "Engage or release the global, agent (scope_id project_id/agent) or customer kill switch; aborts matching in-flight requests",
+  "member", obj({"scope": {"type": "string", "enum": ["global", "agent", "customer"]}, "scope_id": s, "killed": b}, ["scope", "killed"]),
+  obj({"scope": s, "scope_id": s, "killed": b, "aborted_inflight": i}))
+r("GET", "/admin/api/performance", "Monitor", "Measured p50/p95 latency per serving model and success % per provider from request logs (?hours=24)",
+  resp=obj({"hours": i, "models": arr(obj({"model": s, "p50_ms": n, "p95_ms": n, "requests": i})), "providers": arr(obj({"provider": s, "attempts": i, "ok": i, "success_pct": n}))}))
 # Providers & pricing
 r("GET", "/admin/api/providers", "Providers", "Configured providers, routes and key sources")
 r("GET", "/admin/api/provider-keys", "Providers", "Stored provider keys (hints only)", resp=listOf(S("ProviderKey")))

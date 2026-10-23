@@ -34,6 +34,9 @@ func ScopesFor(k *store.VirtualKey, p *store.Project) []Scope {
 		s = append(s, Scope{Kind: store.ScopeAgent, ID: k.ProjectID + "/" + k.Agent, Name: fmt.Sprintf("agent %q", k.Agent)})
 	}
 	s = append(s, Scope{Kind: store.ScopeProject, ID: k.ProjectID, Name: fmt.Sprintf("project %q", p.Name)})
+	if p.OrgID != "" {
+		s = append(s, Scope{Kind: store.ScopeOrg, ID: p.OrgID, Name: "organization"})
+	}
 	return s
 }
 
@@ -94,6 +97,10 @@ type Options struct {
 	// long as committed+reserved spend is still below the limit, which caps
 	// overshoot at roughly one request's cost even under heavy concurrency.
 	Strict bool
+	// OrgDefault is the org-wide spend cap applied to every organization
+	// without its own org limit (config budgets.org_daily_usd /
+	// org_monthly_usd). Zero values mean no default cap.
+	OrgDefault store.Limit
 }
 
 // Enforcer checks, reserves and records spend. Period spend is cached in
@@ -148,7 +155,26 @@ func (e *Enforcer) limitFor(s Scope) (store.Limit, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	l, ok := e.limits[Scope{Kind: s.Kind, ID: s.ID}]
+	if !ok && s.Kind == store.ScopeOrg && (e.opts.OrgDefault.DailyUSD > 0 || e.opts.OrgDefault.MonthlyUSD > 0) {
+		l = store.Limit{Scope: store.ScopeOrg, ScopeID: s.ID, DailyUSD: e.opts.OrgDefault.DailyUSD, MonthlyUSD: e.opts.OrgDefault.MonthlyUSD}
+		return l, true
+	}
 	return l, ok
+}
+
+// OrgCap returns the effective org-wide cap for orgID and where it comes
+// from: "org" (set via the admin API), "config" (server default) or "".
+func (e *Enforcer) OrgCap(orgID string) (store.Limit, string) {
+	e.mu.Lock()
+	l, ok := e.limits[Scope{Kind: store.ScopeOrg, ID: orgID}]
+	e.mu.Unlock()
+	if ok {
+		return l, "org"
+	}
+	if l, ok := e.limitFor(Scope{Kind: store.ScopeOrg, ID: orgID}); ok {
+		return l, "config"
+	}
+	return store.Limit{Scope: store.ScopeOrg, ScopeID: orgID}, ""
 }
 
 func (e *Enforcer) key(s Scope, period string, now time.Time) spendKey {

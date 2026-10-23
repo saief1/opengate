@@ -115,7 +115,8 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		rates = budget.NewDBRates(o.Store)
 	}
 	enf, err := budget.NewEnforcer(ctx, o.Store, o.Alerter, o.Logger, budget.Options{
-		Rates: rates, SyncInterval: o.Config.Budgets.SyncInterval, Strict: o.Config.Budgets.Strict})
+		Rates: rates, SyncInterval: o.Config.Budgets.SyncInterval, Strict: o.Config.Budgets.Strict,
+		OrgDefault: store.Limit{DailyUSD: o.Config.Budgets.OrgDailyUSD, MonthlyUSD: o.Config.Budgets.OrgMonthlyUSD}})
 	if err != nil {
 		return nil, err
 	}
@@ -278,12 +279,17 @@ func (s *Server) Handler() http.Handler {
 			http.Redirect(w, r, "/ui/", http.StatusFound)
 		})
 	}
-	return s.recoverer(s.accessLog(commonHeaders(s.cors(mux))))
+	return s.recoverer(s.accessLog(s.commonHeaders(s.cors(mux))))
 }
 
-func commonHeaders(next http.Handler) http.Handler {
+func (s *Server) commonHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		// HSTS whenever the client connection is HTTPS, including TLS terminated by a
+		// trusted proxy (Fly, a load balancer); r.TLS alone is nil behind those.
+		if s.requestIsHTTPS(r) {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+		}
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		next.ServeHTTP(w, r)
 	})
@@ -295,9 +301,6 @@ func uiHeaders(next http.Handler) http.Handler {
 		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Cache-Control", "no-cache")
-		if r.TLS != nil {
-			h.Set("Strict-Transport-Security", "max-age=31536000")
-		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -455,6 +458,8 @@ var errKilled = errors.New("killed by operator")
 
 type flight struct {
 	keyID, projectID string
+	orgID, agentID   string // agentID = project_id/agent
+	customerID       string
 	cancel           context.CancelCauseFunc
 }
 
@@ -517,6 +522,20 @@ func (s *Server) SweepKills(ctx context.Context) int {
 	}
 	if n > 0 {
 		s.log.Info("kill sweep aborted in-flight requests", "count", n)
+	}
+	return n
+}
+
+// killWhere cancels in-flight requests matching fn.
+func (f *inflight) killWhere(fn func(flight) bool) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, fl := range f.m {
+		if fn(fl) {
+			fl.cancel(errKilled)
+			n++
+		}
 	}
 	return n
 }

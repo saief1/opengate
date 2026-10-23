@@ -482,6 +482,17 @@ var migrations = []migration{
 		`postgres:CREATE OR REPLACE FUNCTION opengate_audit_immutable() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'audit_log is append-only'; END; $$ LANGUAGE plpgsql`,
 		`postgres:CREATE TRIGGER audit_log_immutable BEFORE UPDATE OR DELETE ON audit_log FOR EACH ROW EXECUTE FUNCTION opengate_audit_immutable()`,
 	}},
+	{9, "design-josh: per-attempt failover hops, org/agent/customer kill switches", []string{
+		`ALTER TABLE request_logs ADD COLUMN hops TEXT NOT NULL DEFAULT ''`,
+		`CREATE TABLE IF NOT EXISTS kill_switches (
+  org_id TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  scope_id TEXT NOT NULL DEFAULT '',
+  killed_at BIGINT NOT NULL,
+  actor TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (org_id, scope, scope_id)
+)`,
+	}},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

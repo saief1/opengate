@@ -72,7 +72,8 @@ func minRole(method, pattern string) string {
 	case "POST /admin/api/routing/preview", "POST /admin/api/guardrails/test", "POST /admin/api/mcp/check":
 		return store.RoleViewer // dry runs, no state change
 	case "POST /admin/api/keys", "POST /admin/api/keys/{id}/kill", "POST /admin/api/keys/{id}/unkill",
-		"POST /admin/api/projects/{id}/kill", "POST /admin/api/projects/{id}/unkill", "POST /admin/api/demo/try":
+		"POST /admin/api/projects/{id}/kill", "POST /admin/api/projects/{id}/unkill", "POST /admin/api/demo/try",
+		"POST /admin/api/kill-switch":
 		return store.RoleMember // members create keys and may always pull the kill switch
 	case "PATCH /admin/api/org", "DELETE /admin/api/members/{id}":
 		return store.RoleAdmin // further owner checks happen in the handlers
@@ -84,7 +85,13 @@ func minRole(method, pattern string) string {
 }
 
 func (s *Server) cookieSecure(r *http.Request) bool {
-	if s.cfg.Auth.SecureCookies || r.TLS != nil {
+	return s.cfg.Auth.SecureCookies || s.requestIsHTTPS(r)
+}
+
+// requestIsHTTPS reports whether the client reached us over HTTPS: direct TLS,
+// or X-Forwarded-Proto=https from a trusted proxy when trust_proxy_headers is on.
+func (s *Server) requestIsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
 		return true
 	}
 	if !s.cfg.TrustProxyHeaders {

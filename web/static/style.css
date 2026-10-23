@@ -263,3 +263,30 @@ table.tight td,table.tight th{padding:8px 10px}table.tight td:first-child,table.
   .flash,.flash.mine{animation:none;background:rgba(43,212,154,.08)}
   .kv.bump,.lt{animation:none}.lt{transition:none}
 }
+/* design-josh: kill switch page */
+.it.killon{color:var(--rd)}.it .n.red{color:var(--rd);background:rgba(240,106,106,.12)}
+.killglobal{padding:24px}.killglobal .big{font-size:24px}
+.killglobal.on{border-color:rgba(240,106,106,.6);box-shadow:0 0 0 1px rgba(240,106,106,.25),0 0 40px rgba(240,106,106,.15)}
+.btn.bigkill{font-size:15px;padding:14px 22px;letter-spacing:.04em;font-weight:600;display:inline-flex;gap:10px;align-items:center}
+.btn.bigkill svg{width:16px;height:16px}
+
+/* phones: sidebar becomes a scrollable top bar, header actions wrap, KPI grids go 2-up */
+@media (max-width:760px){
+  .app{flex-direction:column}
+  .sb{width:auto;height:auto;position:static;flex-direction:row;align-items:center;overflow-x:auto;border-right:0;border-bottom:1px solid var(--ln);padding:8px 10px;gap:4px}
+  .sb .sec,.sb .health{display:none}
+  .sb .ws{padding:0 6px 0 0;flex:none}.sb .ws .pill,.sb .ws select{margin-left:6px}
+  .sb .srch{width:auto;margin:0;flex:none;font-size:0}.sb .srch .kbd{font-size:10px}
+  .sb .it{flex:none;white-space:nowrap}
+  .sb .me{padding:0 0 0 6px;flex:none}.sb .me .nm{display:none}
+  .top{height:auto;min-height:52px;flex-wrap:wrap;padding:8px 12px;row-gap:8px;position:static}
+  .acts{flex-wrap:wrap;margin-left:0;max-width:100%}
+  .body{padding:12px}
+  .kpis,.kpis.k3,.kpis.k4,.kpis[style]{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  .kpis.k2{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .g,.g2,.g3,.split,.split380,.split360,.split420,.row2{grid-template-columns:minmax(0,1fr)!important}
+  .hd{flex-wrap:wrap}
+  .card{overflow-x:auto}
+  .modal-body{max-width:calc(100vw - 24px)}
+  #live-toasts{left:12px;right:12px;width:auto}
+}

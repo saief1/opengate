@@ -40,6 +40,7 @@ type RequestLog struct {
 	CacheHit         bool      `json:"cache_hit"`
 	Guard            string    `json:"guard,omitempty"`
 	GuardAction      string    `json:"guard_action,omitempty"`
+	Hops             []Hop     `json:"hops,omitempty"` // every upstream attempt, in order (detail view only)
 	RequestBody      string    `json:"request_body,omitempty"`
 	ResponseBody     string    `json:"response_body,omitempty"`
 }
@@ -56,13 +57,14 @@ func (s *Store) InsertLog(ctx context.Context, l *RequestLog) error {
 	if l.Endpoint == "" {
 		l.Endpoint = "chat"
 	}
-	_, err := s.exec(ctx, `INSERT INTO request_logs(`+logCols+`,request_body,response_body)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	hops := encodeHops(l.Hops)
+	_, err := s.exec(ctx, `INSERT INTO request_logs(`+logCols+`,request_body,response_body,hops)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		l.ID, ms(l.TS), l.ProjectID, l.KeyID, l.Agent, l.UserLabel, l.Model, l.Provider, l.ProviderModel,
 		l.PromptTokens, l.CompletionTokens, l.CostUSD, l.LatencyMS, l.Status, l.ErrorCode, l.ErrorMessage,
 		b2i(l.Stream), l.Attempts, b2i(l.UsageEstimated),
 		l.Endpoint, l.CachedTokens, l.CacheWriteTokens, l.CustomerID, l.Route, l.BaselineCostUSD, l.BilledUSD, b2i(l.CacheHit), l.Guard, l.GuardAction,
-		reqBody, respBody)
+		reqBody, respBody, hops)
 	return err
 }
 
@@ -89,9 +91,9 @@ func scanLog(sc interface{ Scan(...any) error }, withBodies bool) (*RequestLog, 
 	dest := []any{&l.ID, &ts, &l.ProjectID, &l.KeyID, &l.Agent, &l.UserLabel, &l.Model, &l.Provider, &l.ProviderModel,
 		&l.PromptTokens, &l.CompletionTokens, &l.CostUSD, &l.LatencyMS, &l.Status, &l.ErrorCode, &l.ErrorMessage, &stream, &l.Attempts, &est,
 		&l.Endpoint, &l.CachedTokens, &l.CacheWriteTokens, &l.CustomerID, &l.Route, &l.BaselineCostUSD, &l.BilledUSD, &hit, &l.Guard, &l.GuardAction}
-	var rb, sb sql.NullString
+	var rb, sb, hb sql.NullString
 	if withBodies {
-		dest = append(dest, &rb, &sb)
+		dest = append(dest, &rb, &sb, &hb)
 	}
 	if err := sc.Scan(dest...); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -101,6 +103,7 @@ func scanLog(sc interface{ Scan(...any) error }, withBodies bool) (*RequestLog, 
 	}
 	l.TS, l.Stream, l.UsageEstimated, l.CacheHit = fromMS(ts), stream == 1, est == 1, hit == 1
 	l.RequestBody, l.ResponseBody = rb.String, sb.String
+	l.Hops = decodeHops(hb.String)
 	return &l, nil
 }
 
@@ -183,7 +186,7 @@ func (s *Store) ListLogs(ctx context.Context, f LogFilter) ([]*RequestLog, int, 
 
 // GetLog returns one log including bodies.
 func (s *Store) GetLog(ctx context.Context, id string) (*RequestLog, error) {
-	return scanLog(s.queryRow(ctx, `SELECT `+logCols+`,request_body,response_body FROM request_logs WHERE id=?`, id), true)
+	return scanLog(s.queryRow(ctx, `SELECT `+logCols+`,request_body,response_body,hops FROM request_logs WHERE id=?`, id), true)
 }
 
 // SpendSince sums cost for a scope since t.
@@ -198,6 +201,8 @@ func (s *Store) SpendSince(ctx context.Context, scope, scopeID string, since tim
 	case ScopeAgent:
 		proj, agent, _ := strings.Cut(scopeID, "/")
 		q, args = `project_id=? AND agent=?`, []any{proj, agent}
+	case ScopeOrg:
+		q, args = `project_id IN (SELECT id FROM projects WHERE org_id=?)`, []any{scopeID}
 	default:
 		return 0, errors.New("unknown scope")
 	}
@@ -264,7 +269,7 @@ func (s *Store) SummarySince(ctx context.Context, f StatsFilter, since time.Time
 	w, wa := f.where()
 	err := s.queryRow(ctx, `SELECT COUNT(*),
 CAST(SUM(CASE WHEN status>=400 THEN 1 ELSE 0 END) AS BIGINT),
-CAST(SUM(CASE WHEN error_code IN ('budget_exceeded','key_killed','project_killed','killed','killed_mid_stream','rate_limit_exceeded','model_not_allowed','max_tokens_exceeded','guardrail_blocked','prompt_injection') THEN 1 ELSE 0 END) AS BIGINT),
+CAST(SUM(CASE WHEN error_code IN ('budget_exceeded','key_killed','project_killed','org_killed','agent_killed','customer_killed','killed','killed_mid_stream','rate_limit_exceeded','model_not_allowed','max_tokens_exceeded','guardrail_blocked','prompt_injection') THEN 1 ELSE 0 END) AS BIGINT),
 COALESCE(SUM(cost_usd),0), CAST(SUM(prompt_tokens+completion_tokens) AS BIGINT), AVG(CASE WHEN status<400 THEN latency_ms END),
 SUM(CASE WHEN cache_hit=0 AND baseline_cost_usd>cost_usd THEN baseline_cost_usd-cost_usd ELSE 0 END),
 CAST(SUM(cache_hit) AS BIGINT), SUM(CASE WHEN cache_hit=1 THEN baseline_cost_usd ELSE 0 END),
@@ -359,7 +364,7 @@ func (s *Store) GroupSeries(ctx context.Context, f StatsFilter, by string, since
 	case "customer":
 		extra = " AND customer_id<>''"
 	case "blocked":
-		extra = " AND error_code IN ('budget_exceeded','key_killed','project_killed','killed','killed_mid_stream','rate_limit_exceeded','model_not_allowed','max_tokens_exceeded','guardrail_blocked','prompt_injection')"
+		extra = " AND error_code IN ('budget_exceeded','key_killed','project_killed','org_killed','agent_killed','customer_killed','killed','killed_mid_stream','rate_limit_exceeded','model_not_allowed','max_tokens_exceeded','guardrail_blocked','prompt_injection')"
 	}
 	b := bucket.Milliseconds()
 	w, wa := f.where()

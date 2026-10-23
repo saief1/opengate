@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -105,5 +106,31 @@ func TestPasswordGateSaturates(t *testing.T) {
 	s.pwFree()
 	if !s.pwSlot(httptest.NewRecorder(), r) {
 		t.Fatal("slot must be reusable after free")
+	}
+}
+
+func TestHSTSBehindTrustedTLSProxy(t *testing.T) {
+	_, n, _ := net.ParseCIDR("10.0.0.0/8")
+	cases := []struct {
+		trust      bool
+		peer, xfp  string
+		want, name string
+	}{
+		{true, "10.0.0.5:1", "https", "max-age=31536000", "TLS terminated by a trusted proxy"},
+		{true, "10.0.0.5:1", "http", "", "plain HTTP through the proxy"},
+		{true, "198.51.100.3:1", "https", "", "X-Forwarded-Proto from an untrusted peer"},
+		{false, "10.0.0.5:1", "https", "", "proxy headers off"},
+	}
+	for _, c := range cases {
+		s := &Server{cfg: &config.Config{TrustProxyHeaders: c.trust}, trusted: []*net.IPNet{n}}
+		h := s.commonHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		r := httptest.NewRequest("GET", "/ui/", nil)
+		r.RemoteAddr = c.peer
+		r.Header.Set("X-Forwarded-Proto", c.xfp)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if got := w.Header().Get("Strict-Transport-Security"); got != c.want {
+			t.Errorf("%s: HSTS %q, want %q", c.name, got, c.want)
+		}
 	}
 }
