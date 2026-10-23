@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/saief1/opengate/internal/config"
 	"github.com/saief1/opengate/internal/store"
@@ -105,8 +106,34 @@ func TestGlobalAgentCustomerKill(t *testing.T) {
 	if sw := ks["switches"].([]any); len(sw) != 1 || sw[0].(map[string]any)["scope_id"] != "acme" {
 		t.Fatalf("switches: %v", ks["switches"])
 	}
-	if h := ks["history"].([]any); len(h) != 5 || h[0].(map[string]any)["action"] != "killswitch.engage" {
+	// Newest first. Audit timestamps are millisecond precision, so the last
+	// engage can tie with the agent release just before it; it must share
+	// the newest timestamp rather than sort strictly first.
+	h, _ := ks["history"].([]any)
+	if len(h) != 5 {
 		t.Fatalf("history: %v", h)
+	}
+	parseTS := func(v any) time.Time {
+		t.Helper()
+		ts, err := time.Parse(time.RFC3339Nano, v.(string))
+		if err != nil {
+			t.Fatalf("ts %v: %v", v, err)
+		}
+		return ts
+	}
+	var customerTS time.Time
+	for i, x := range h {
+		m := x.(map[string]any)
+		ts := parseTS(m["ts"])
+		if i > 0 && ts.After(parseTS(h[i-1].(map[string]any)["ts"])) {
+			t.Fatalf("history not newest-first: %v", h)
+		}
+		if m["action"] == "killswitch.engage" && m["target"] == "customer:acme" {
+			customerTS = ts
+		}
+	}
+	if customerTS.IsZero() || customerTS.Before(parseTS(h[0].(map[string]any)["ts"])) {
+		t.Fatalf("customer engage should share the newest timestamp: %v", h)
 	}
 }
 
