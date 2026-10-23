@@ -395,11 +395,11 @@ PAGES.overview = async (root, actions, crumb, r) => {
   const perf = await soft("/performance?hours=24", { models: [], providers: [] });
   const prev = ser.previous, sm = ser.summary;
   const monthSpend = (await soft("/overview?days=1", { month: {} })).month.cost_usd || 0;
-  const projLimits = S.limits.filter((l) => l.scope === "project" && l.monthly_usd > 0);
-  const orgCap = oc && oc.monthly_usd > 0;
-  const cap = orgCap ? oc.monthly_usd : projLimits.reduce((a, l) => a + l.monthly_usd, 0), capSpent = orgCap ? oc.monthly_spent : projLimits.reduce((a, l) => a + l.monthly_spent, 0);
-  const anyKilled = S.projects.some((p) => p.killed);
   const oc = await soft("/org/spend-cap", null);
+  const projLimits = S.limits.filter((l) => l.scope === "project" && l.monthly_usd > 0);
+  const orgCap = !!(oc && oc.monthly_usd > 0);
+  const cap = orgCap ? oc.monthly_usd : projLimits.reduce((a, l) => a + l.monthly_usd, 0), capSpent = orgCap ? (oc.monthly_spent || 0) : projLimits.reduce((a, l) => a + l.monthly_spent, 0);
+  const anyKilled = S.projects.some((p) => p.killed);
   actions.push(liveIndicator(), tryItButton(),
     el("span", { class: "seg" }, RANGES.map(([v, l]) => el("button", { class: +v === hours ? "a" : "", onclick: () => setQuery({ h: v === "24" ? "" : v }) }, l))),
     can("member") ? el("a", { class: "btn k", href: "#kill" }, svgIconSmall("kill"), anyKilled || S.globalKill ? "Kill switch · active" : "Kill switch") : null);
@@ -568,13 +568,7 @@ async function killKey(k, kill) {
   if (kill && !confirm(`Kill key ${k.name}? New requests get 403 and in-flight streams are aborted.`)) return;
   await api(`/keys/${k.id}/${kill ? "kill" : "unkill"}`, { method: "POST" }); toast(kill ? "Key killed" : "Key revived"); render();
 }
-PAGES.keys = async (root, actions) => {
-  const ser = await api("/series?hours=24&by=key");
-  const live = S.keys.filter((k) => !k.revoked);
-  const killed = live.filter((k) => k.killed);
-  const lastKill = (await soft("/audit?limit=50", { data: [] })).data.find((a) => a.action === "key.kill");
-  const today = live.reduce((a, k) => a + (k.spend_today || 0), 0);
-  actions.push(el("span", { class: "m mut", style: { fontSize: "11px" } }, "stored only as SHA-256 hashes"), can("member") ? el("button", { class: "btn gr", onclick: () => document.querySelector("#nk-name")?.focus() }, "+ New key") : null);
+function keysTable(live) {
   const rows = live.map((k) => {
     const rl = limitFor("key", k.id);
     return el("tr", {}, el("td", {}, el("div", {}, k.name), el("div", { class: "m mut", style: { fontSize: "11px", marginTop: "2px" } }, keyLabel(k) + " · " + projName(k.project_id))),
@@ -584,13 +578,43 @@ PAGES.keys = async (root, actions) => {
         k.killed ? el("button", { class: "btn sm", onclick: () => killKey(k, false) }, "Revive") : el("button", { class: "btn k sm", onclick: () => killKey(k, true) }, "Kill"),
         can("admin") ? el("button", { class: "btn sm", title: "Edit or revoke", onclick: () => keyModal(k) }, "⋯") : null) : null));
   });
+  return table(["Key", "Agent", "Budget", ">RPM", "Status", ""], rows, { cls: "tight", empty: empty("No keys yet", "Create a key on the right and use it as the API key in any OpenAI SDK.") });
+}
+// Repaint the keys table from fresh /keys and /limits data. Leaves the rest of
+// the page alone so a just-created one-time secret stays visible.
+async function refreshKeysTable() {
+  const [k, lim] = await Promise.all([api("/keys"), soft("/limits", { data: S.limits })]);
+  S.keys = k.data; S.limits = (lim && lim.data) || [];
+  const live = S.keys.filter((x) => !x.revoked);
+  S.counts.keys = live.length;
+  S.counts.agents = new Set(live.filter((x) => x.agent).map((x) => x.project_id + "/" + x.agent)).size;
+  const host = document.getElementById("keys-table");
+  if (host) host.replaceChildren(keysTable(live));
+  const badge = document.querySelector('a[href="#keys"] .n');
+  if (badge) badge.textContent = compact(S.counts.keys);
+  const agentsBadge = document.querySelector('a[href="#agents"] .n');
+  if (agentsBadge) agentsBadge.textContent = compact(S.counts.agents);
+  const active = document.querySelector("#keys-kpis .kpi .kv");
+  const sub = document.querySelector("#keys-kpis .kpi .kd");
+  if (active) active.textContent = num(live.filter((x) => !x.killed).length);
+  if (sub) sub.textContent = `across ${new Set(live.map((x) => x.project_id)).size} projects`;
+}
+PAGES.keys = async (root, actions) => {
+  const ser = await api("/series?hours=24&by=key");
+  const live = S.keys.filter((k) => !k.revoked);
+  const killed = live.filter((k) => k.killed);
+  const lastKill = (await soft("/audit?limit=50", { data: [] })).data.find((a) => a.action === "key.kill");
+  const today = live.reduce((a, k) => a + (k.spend_today || 0), 0);
+  actions.push(el("span", { class: "m mut", style: { fontSize: "11px" } }, "stored only as SHA-256 hashes"), can("member") ? el("button", { class: "btn gr", onclick: () => document.querySelector("#nk-name")?.focus() }, "+ New key") : null);
+  const tableHost = el("div", { id: "keys-table" });
+  tableHost.append(keysTable(live));
+  const kpiCard = kpis([["Active keys", num(live.length - killed.length), `across ${new Set(live.map((k) => k.project_id)).size} projects`],
+    ["Killed", num(killed.length), lastKill ? `${keyName(lastKill.target)} · ${ago(lastKill.ts)}` : "none killed"],
+    ["Spend today", usdBig(today), "UTC day · all keys"]]);
+  kpiCard.id = "keys-kpis";
   const chart = card("Spend by key", lineChart(seriesPoints(ser, "cost", keyName), { buckets: bucketRange(ser.since, ser.now, ser.bucket_seconds), height: 140 }), { sub: "USD / hour · 24h" });
   root.append(el("div", { class: "g split" },
-    el("div", { class: "g" },
-      kpis([["Active keys", num(live.length - killed.length), `across ${new Set(live.map((k) => k.project_id)).size} projects`],
-        ["Killed", num(killed.length), lastKill ? `${keyName(lastKill.target)} · ${ago(lastKill.ts)}` : "none killed"],
-        ["Spend today", usdBig(today), "UTC day · all keys"]]),
-      card("Virtual keys", table(["Key", "Agent", "Budget", ">RPM", "Status", ""], rows, { cls: "tight", empty: empty("No keys yet", "Create a key on the right and use it as the API key in any OpenAI SDK.") })), chart),
+    el("div", { class: "g" }, kpiCard, card("Virtual keys", tableHost), chart),
     el("div", { class: "g" }, newKeyCard(), apiCard(), scopesCard(live))));
 };
 function keyModal(k) {
@@ -617,7 +641,7 @@ function newKeyCard() {
       kvr([["Daily limit", +f.daily.value ? usd(+f.daily.value) : "—"], ["Monthly limit", +f.monthly.value ? usd(+f.monthly.value) : "—"], ["Rate limit", +f.rpm.value ? f.rpm.value + " rpm" : "—"], ["Agent label", f.agent.value || "—"], ["Project", projName(f.proj.value)]])),
       { right: el("span", { class: "st ok" }, "new") }));
     form.reset(); toast("Key created; copy it now");
-    const k = await api("/keys"); S.keys = k.data;
+    try { await refreshKeysTable(); } catch (e) { if (e && e.message === "unauthorized") return; }
   } },
     el("label", {}, "Name", f.name), el("div", { class: "row2" }, el("label", {}, "Project", f.proj), el("label", {}, "Agent label", f.agent)),
     el("div", { class: "row2" }, el("label", {}, "Daily USD", f.daily), el("label", {}, "Monthly USD", f.monthly)), el("label", {}, "Rate limit (rpm)", f.rpm),
@@ -839,10 +863,34 @@ function orgCapCard(oc) {
   const edit = () => {
     const d = el("input", { class: "inp", type: "number", min: 0, step: "0.01", value: oc.source === "org" ? oc.daily_usd || "" : "", placeholder: "no daily cap" });
     const m = el("input", { class: "inp", type: "number", min: 0, step: "0.01", value: oc.source === "org" ? oc.monthly_usd || "" : "", placeholder: "no monthly cap" });
-    const save = async (clear) => { await api("/org/spend-cap", { method: "PUT", body: clear ? { daily_usd: 0, monthly_usd: 0 } : { daily_usd: +d.value || 0, monthly_usd: +m.value || 0 } }); closeModal(); toast(clear ? "Org cap cleared" : "Org cap saved"); render(); };
-    modal("Org spend cap", el("div", { class: "hint" }, "Optional. Caps total spend across every project in this organization. Requests over the cap get 429 budget_exceeded, like any other budget. Changes are audit-logged."),
-      el("label", {}, "Daily cap (USD, resets 00:00 UTC)"), d, el("label", {}, "Monthly cap (USD, resets on the 1st UTC)"), m,
-      el("div", { style: { display: "flex", gap: "8px", marginTop: "14px" } }, el("button", { class: "btn gr", onclick: () => save(false) }, "Save"), oc.source === "org" ? el("button", { class: "btn k", onclick: () => save(true) }, "Remove cap") : null, el("button", { class: "btn", onclick: closeModal }, "Cancel")));
+    const errBox = el("div", { class: "red", style: { fontSize: "12.5px" } });
+    const capValue = (input, label) => {
+      if (input.validity && (input.validity.badInput || input.validity.rangeUnderflow)) {
+        const e = new Error(label + " must be a number that is 0 or greater"); e.client = true; throw e;
+      }
+      const raw = String(input.value).trim();
+      if (raw === "") return 0;
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0) { const e = new Error(label + " must be a number that is 0 or greater"); e.client = true; throw e; }
+      return n;
+    };
+    const save = async (clear) => {
+      errBox.textContent = "";
+      try {
+        const body = clear ? { daily_usd: 0, monthly_usd: 0 } : { daily_usd: capValue(d, "Daily cap"), monthly_usd: capValue(m, "Monthly cap") };
+        await api("/org/spend-cap", { method: "PUT", body });
+        closeModal(); toast(clear ? "Org cap cleared" : "Org cap saved"); render();
+      } catch (e) {
+        if (e && e.message === "unauthorized") return;
+        const msg = (e && e.message) || "Could not save the org cap";
+        errBox.textContent = msg;
+        if (e && e.client) toast(msg, true);
+      }
+    };
+    modal("Org spend cap", el("form", { class: "form", novalidate: true, onsubmit: (ev) => { ev.preventDefault(); save(false); } },
+      el("div", { class: "hint" }, "Optional. Caps total spend across every project in this organization. Requests over the cap get 429 budget_exceeded, like any other budget. Changes are audit-logged."),
+      el("label", {}, "Daily cap (USD, resets 00:00 UTC)", d), el("label", {}, "Monthly cap (USD, resets on the 1st UTC)", m), errBox,
+      el("div", { class: "acts2" }, el("button", { class: "btn gr", type: "submit" }, "Save"), oc.source === "org" ? el("button", { class: "btn k", type: "button", onclick: () => save(true) }, "Remove cap") : null, el("button", { class: "btn", type: "button", onclick: closeModal }, "Cancel"))));
   };
   return card("Org spend cap", el("div", {}, set ? [bar(oc.daily_spent, oc.daily_usd, "Today"), bar(oc.monthly_spent, oc.monthly_usd, "This month")]
     : el("div", { class: "empty" }, el("b", {}, "No org-wide cap"), el("div", {}, `Charts show the sum of project caps instead (${usd(oc.project_caps.daily_usd, 0)}/day · ${usd(oc.project_caps.monthly_usd, 0)}/month).`)),
