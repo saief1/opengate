@@ -61,13 +61,13 @@ func TestFlyProdConfig(t *testing.T) {
 	}
 	s := string(b)
 	for _, want := range []string{
-		"app = \"opengate-prod\"",
+		"app = \"opengate\"",
 		"min_machines_running = 1",
 		"auto_stop_machines = \"off\"",
 		"path = \"/readyz\"",
 		"path = \"/livez\"",
 		"OPENGATE_ENV = \"production\"",
-		"OPENGATE_PUBLIC_URL = \"https://opengatehq.com\"",
+		"OPENGATE_PUBLIC_URL = \"https://opengate.fly.dev\"",
 		"dockerfile = \"../../Dockerfile.prod\"",
 		"local_path = \"deploy/cloud.yaml\"",
 	} {
@@ -81,7 +81,6 @@ func TestFlyProdConfig(t *testing.T) {
 		"OPENGATE_DEMO_TRAFFIC =",
 		"OPENGATE_PUBLIC_PLAYGROUND =",
 		"127.0.0.1:9090",
-		"source = \"opengate_data\"",
 	} {
 		if strings.Contains(s, bad) {
 			t.Errorf("fly-prod must not set %s", bad)

@@ -111,7 +111,45 @@ function modal(title, ...content) {
   $("modal-body").replaceChildren(el("h2", {}, title), ...content);
   $("modal").classList.remove("hidden");
 }
-function closeModal() { $("modal").classList.add("hidden"); }
+// pendingConfirm resolves a typed-confirm dialog when the modal is dismissed
+// by Escape, the backdrop, or closeModal. finish() clears it before resolving.
+let pendingConfirm = null;
+function closeModal() {
+  $("modal").classList.add("hidden");
+  if (pendingConfirm) { const done = pendingConfirm; pendingConfirm = null; done(false); }
+}
+function confirmTyped(opts) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (v) => {
+      if (settled) return;
+      settled = true;
+      pendingConfirm = null;
+      $("modal").classList.add("hidden");
+      resolve(!!v);
+    };
+    pendingConfirm = finish;
+    const input = el("input", { class: "inp m", autocomplete: "off", spellcheck: "false", "aria-label": "Type " + opts.expect + " to confirm" });
+    const ok = el("button", { class: "btn kf", type: "button", disabled: true }, opts.confirm || "Confirm");
+    const mark = el("span", { class: "grn", style: { marginLeft: "auto", visibility: "hidden" } }, "✓");
+    const sync = () => { const good = input.value === opts.expect; ok.disabled = !good; mark.style.visibility = good ? "visible" : "hidden"; };
+    input.addEventListener("input", sync);
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter" && input.value === opts.expect) { e.preventDefault(); finish(true); } });
+    ok.onclick = () => { if (input.value === opts.expect) finish(true); };
+    $("modal-body").className = "modal-body confirm-box";
+    $("modal-body").replaceChildren(
+      el("div", { class: "row", style: { gap: "12px", alignItems: "center" } },
+        el("span", { style: { width: "30px", height: "30px", borderRadius: "7px", background: "rgba(242,85,90,.1)", border: ".5px solid rgba(242,85,90,.4)", display: "grid", placeItems: "center", color: "#FF7A7F", flex: "none" } }, svgIconSmallSafe("kill")),
+        el("div", {}, el("div", { style: { fontSize: "15px", fontWeight: "500" } }, opts.title), opts.sub ? el("div", { class: "mut", style: { fontSize: "12px" } }, opts.sub) : null)),
+      el("p", { class: "t2", style: { fontSize: "12.5px", margin: "12px 0" } }, opts.text),
+      opts.note ? el("div", { class: "warn" }, opts.note) : null,
+      el("div", { style: { fontSize: "12px", color: "var(--t2)", marginBottom: "6px" } }, "Type ", el("span", { class: "m" }, opts.expect), " to confirm"),
+      el("div", { style: { display: "flex", alignItems: "center", gap: "8px" } }, input, mark),
+      el("div", { class: "acts2" }, el("button", { class: "btn", type: "button", onclick: () => finish(false) }, "Cancel"), ok));
+    $("modal").classList.remove("hidden");
+    input.focus();
+  });
+}
 const csv = (s) => String(s || "").split(",").map((x) => x.trim()).filter(Boolean);
 function download(name, text, type) {
   const a = el("a", { href: URL.createObjectURL(new Blob([text], { type: type || "text/csv" })), download: name });
@@ -217,12 +255,44 @@ const ICONS = {
 };
 const svgIcon = (name) => el("svg", { viewBox: "0 0 24 24" }, ICONS[name].map(([t, a]) => el(t, a)));
 const logoSvg = (s) => el("div", { class: "logo" }, el("svg", { width: s || 12, height: s || 12, viewBox: "0 0 24 24", fill: "none", stroke: "#fff", "stroke-width": 2.6, "stroke-linecap": "round" }, el("path", { d: "M5 20V9l7-5 7 5v11" }), el("path", { d: "M10 20v-5h4v5" })));
-const NAV = [
-  ["overview", "Overview"], ["requests", "Requests", "requests"], ["keys", "Keys", "keys"], ["agents", "Agents", "agents"], ["customers", "Customers", "customers"],
-  "Control", ["budgets", "Budgets"], ["policies", "Policies"], ["mcp", "MCP tools", "mcp"], ["providers", "Providers & models"], ["kill", "Kill switch"],
-  "Workspace", ["setup", "Setup & SDK"], ["settings", "Settings", null, "team"], ["audit", "Audit log"],
-  "Account", ["billing", "Plan & billing"],
-];
+// Icon rail sections. Every existing page stays reachable; the secondary
+// sidebar just groups them the way the v4 mockups do.
+const SECTIONS = {
+  home: { icon: "overview", title: "Project overview", groups: [
+    ["", [["overview", "Overview", "overview"], ["overview?h=168", "Usage", "budgets"], ["budgets", "Alerts", "budgets"]]],
+    ["Gateway", [["requests", "Request logs", "requests", "requests"], ["providers", "Models", "providers"], ["keys", "API keys", "keys", "keys"]]],
+  ]},
+  logs: { icon: "requests", title: "Logs & Analytics", groups: [
+    ["Collections", [["requests", "Gateway requests", "requests", "requests"], ["requests?view=errors", "Errors", "requests"], ["requests?view=guard", "Guardrail events", "policies"], ["audit", "Auth & audit", "audit"]]],
+    ["Queries", [["requests", "Saved filters", "setup"], ["providers", "Models", "providers"]]],
+  ]},
+  models: { icon: "providers", title: "Models", groups: [
+    ["Catalog", [["providers", "All models", "providers"], ["providers", "Routes & fallbacks", "setup"], ["policies", "Routing rules", "policies"]]],
+    ["Access", [["keys", "Provider secrets", "keys"], ["mcp", "MCP tools", "mcp", "mcp"]]],
+  ]},
+  keys: { icon: "keys", title: "API keys", groups: [
+    ["Access", [["keys", "Gateway keys", "keys", "keys"], ["agents", "Agents", "agents", "agents"], ["customers", "Customers", "customers", "customers"]]],
+    ["Security", [["audit", "Key audit log", "audit"], ["kill", "Kill switch", "kill"]]],
+  ]},
+  budgets: { icon: "budgets", title: "Budgets & limits", groups: [
+    ["Spend", [["budgets", "Budgets", "budgets"], ["customers", "Per-customer caps", "customers"], ["billing", "Plan & billing", "billing"]]],
+    ["Limits", [["budgets", "Rate limits", "requests"], ["kill", "Kill switch", "kill"]]],
+  ]},
+  guard: { icon: "policies", title: "Guardrails", groups: [
+    ["Protection", [["kill", "Kill switch", "kill"], ["policies", "Policies", "policies"], ["providers", "Blocked models", "providers"]]],
+    ["Content", [["policies", "PII & prompt filters", "policies"], ["requests?view=guard", "Guardrail events", "requests"]]],
+  ]},
+  connect: { icon: "setup", title: "API Docs", groups: [
+    ["Getting started", [["setup", "Connect", "setup"], ["mcp", "MCP connect", "mcp"], ["keys", "Authentication", "keys"]]],
+    ["Reference", [["requests", "Request logs", "requests"], ["providers", "Models", "providers"], ["billing", "Usage & plan", "billing"]]],
+  ]},
+  settings: { icon: "settings", title: "Project settings", groups: [
+    ["Configuration", [["team", "General & team", "settings"], ["audit", "Audit log", "audit"], ["billing", "Billing", "billing"]]],
+    ["Gateway", [["policies", "Guardrails", "policies"], ["budgets", "Budgets", "budgets"], ["setup", "Connect", "setup"]]],
+  ]},
+};
+const SECTION_OF = { overview: "home", requests: "logs", providers: "models", keys: "keys", agents: "keys", customers: "budgets", budgets: "budgets", policies: "guard", kill: "guard", mcp: "connect", setup: "connect", team: "settings", billing: "settings", audit: "settings" };
+const RAIL = ["home", "logs", "models", "keys", "budgets", "guard", null, "connect", "settings"];
 const TITLES = { overview: "Overview", requests: "Requests", keys: "Keys", agents: "Agents", customers: "Cost per customer", budgets: "Budgets & alerts", policies: "Policies", kill: "Kill switch",
   providers: "Providers & models", setup: "Setup & SDK", team: "Team & settings", billing: "Plan & billing", mcp: "MCP tool gateway", audit: "Audit log" };
 // Roles as shown to people ("viewer" is stored; "read-only" is its label).
@@ -238,36 +308,86 @@ function route() {
   const parts = path.split("/");
   return { page: TITLES[parts[0]] ? parts[0] : "overview", id: parts[1] ? decodeURIComponent(parts[1]) : "", q: new URLSearchParams(query || "") };
 }
-function sidebar(active) {
-  const org = me.orgs.find((o) => o.id === me.org_id) || { name: me.org_id };
-  const items = NAV.map((n) => {
-    if (typeof n === "string") return el("div", { class: "sec" }, n);
-    const [ic, label, count, target] = n; const page = target || ic;
-    const on = page === active;
-    return el("a", { class: "it" + (on ? " on" : "") + (ic === "kill" && S.globalKill ? " killon" : ""), href: "#" + page }, svgIcon(ic), label, ic === "kill" && S.globalKill ? el("span", { class: "n red" }, "ON") : null, count && S.counts[count] !== undefined ? el("span", { class: "n" }, compact(S.counts[count])) : null);
+function sectionOf(page) { return SECTION_OF[page] || "home"; }
+function activeProject() {
+  const q = route().q.get("project");
+  if (q) { const hit = S.projects.find((p) => p.id === q || p.name === q); if (hit) return hit; }
+  const saved = sessionStorage.getItem("opengate_project");
+  return S.projects.find((p) => p.id === saved) || S.projects.find((p) => (p.keys || 0) > 0) || S.projects[0] || null;
+}
+function projectLabel() { const p = activeProject(); return p ? p.name : "project"; }
+function pickProject(id) {
+  sessionStorage.setItem("opengate_project", id);
+  const r = route();
+  if (["policies", "requests", "kill", "overview"].includes(r.page)) setQuery({ project: id });
+  else render();
+}
+function rail(active) {
+  const sec = sectionOf(active);
+  const links = RAIL.map((id) => {
+    if (!id) return el("hr");
+    const s = SECTIONS[id];
+    const first = s.groups[0][1][0][0].split("?")[0];
+    return el("a", { class: id === sec ? "on" : "", href: "#" + first, title: s.title, "aria-label": s.title }, svgIcon(s.icon));
   });
-  const orgPick = me.orgs.length > 1
-    ? el("select", { "aria-label": "Organization", onchange: (e) => switchOrg(e.target.value) }, me.orgs.map((o) => el("option", { value: o.id, selected: o.id === me.org_id }, o.name)))
-    : el("span", { class: "pill", title: (org.name || "") + " · " + me.role }, org.name || "org");
+  return el("nav", { class: "rail", "aria-label": "Sections" }, el("a", { class: "lg", href: "#overview", title: "OpenGate" }, logoMark()), links, el("div", { class: "sp" }), el("a", { href: "#team", title: "Team", "aria-label": "Team" }, svgIcon("customers")));
+}
+function side(active) {
+  const sec = SECTIONS[sectionOf(active)];
+  const here = location.hash.replace(/^#/, "") || "overview";
+  const groups = sec.groups.map(([label, items]) => el("div", { class: "grp" },
+    label ? el("div", { class: "sec" }, label) : el("div", { style: { height: "8px" } }),
+    items.map(([href, text, icon, count]) => {
+      const page = href.split("?")[0];
+      const on = here === href || (here === page && !href.includes("?") && page === active && !items.some((it) => it[0] === here));
+      return el("a", { class: "it" + (on ? " on" : "") + (page === "kill" && S.globalKill ? " killon" : ""), href: "#" + href }, svgIcon(icon), text,
+        page === "kill" && S.globalKill ? el("span", { class: "n red" }, "ON") : null,
+        count && S.counts[count] !== undefined ? el("span", { class: "n" }, compact(S.counts[count])) : null);
+    })));
   const hl = S.health;
   const user = me.kind === "user" ? (me.user.name || me.user.email) : "Admin token";
-  return el("aside", { class: "sb" },
-    el("div", { class: "ws" }, logoSvg(), el("b", {}, "OpenGate"), orgPick),
-    el("button", { class: "srch", onclick: palette }, el("svg", { width: 13, height: 13, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": 2 }, el("circle", { cx: 11, cy: 11, r: 7 }), el("path", { d: "m20 20-3.5-3.5" })), "Search or jump to…", el("span", { class: "kbd", style: { marginLeft: "auto" } }, "⌘K")),
-    items,
-    el("div", { class: "health" + (hl && !hl.ok ? " bad" : "") },
-      el("div", { class: "h1r" }, el("span", { class: "gdot" + (!hl ? " idle" : hl.ok ? "" : " bad") }), !hl ? "Checking gateway…" : hl.ok ? "Gateway healthy" : "Gateway not ready"),
-      el("div", { class: "h2r" }, hl && hl.p50 ? `p50 latency ${ms(hl.p50)} · 24h` : hl ? "no traffic in the last 24h" : "\u00a0", S.cfg.version ? " · " + String(S.cfg.version).replace(/^v?/, "v") : "")),
-    el("div", { class: "me" }, el("span", { class: "mono av" }, initials(user)), el("span", { class: "nm", title: me.user ? me.user.email : "operator" }, user), el("button", { onclick: logout, title: "Sign out" }, "Sign out")));
+  return el("aside", { class: "side" }, el("div", { class: "h" }, sec.title), groups,
+    el("div", { class: "foot" },
+      el("div", { class: "health" + (hl && !hl.ok ? " bad" : "") },
+        el("div", { class: "h1r" }, el("span", { class: "gdot" + (!hl ? " idle" : hl.ok ? "" : " bad") }), !hl ? "Checking gateway…" : hl.ok ? "Gateway healthy" : "Gateway not ready"),
+        el("div", { class: "h2r" }, hl && hl.p50 ? `p50 overhead ${ms(hl.p50)}` : hl ? "no traffic in 24h" : "\u00a0", S.cfg.version ? " · " + String(S.cfg.version).replace(/^v?/, "v") : "")),
+      el("div", { class: "me" }, el("span", { class: "av" }, initials(user)), el("span", { class: "nm", title: me.user ? me.user.email : "operator" }, user), el("button", { onclick: logout, title: "Sign out" }, "Sign out"))));
+}
+function logoMark() {
+  return el("svg", { width: 22, height: 22, viewBox: "0 0 24 24", "aria-hidden": "true" },
+    el("path", { d: "M4 21V9l8-6 8 6v12h-5v-7H9v7z", fill: "#3ECF8E" }),
+    el("path", { d: "M9 21v-7h6v7", fill: "#1a6b48" }));
 }
 async function switchOrg(id) {
   if (me.kind === "token") sessionStorage.setItem(ORG_KEY, id); else await api("/auth/switch-org", { method: "POST", body: { org_id: id } });
   await loadMe(); render();
 }
-function topbar(crumb, actions) {
-  const org = me.orgs.find((o) => o.id === me.org_id) || { name: "" };
-  return el("div", { class: "top" }, el("span", { class: "crumb" }, (org.name || "") + " / ", crumb), el("div", { class: "acts" }, actions));
+function topbar() {
+  const org = me.orgs.find((o) => o.id === me.org_id) || { name: me.org_id || "org" };
+  const plan = (me.plan && me.plan.name) || (S.authCfg && S.authCfg.cloud ? "Free" : "Self-host");
+  const orgCtl = me.orgs.length > 1
+    ? el("select", { "aria-label": "Organization", onchange: (e) => switchOrg(e.target.value) }, me.orgs.map((o) => el("option", { value: o.id, selected: o.id === me.org_id }, o.name)))
+    : org.name || "org";
+  const proj = activeProject();
+  const projCtl = S.projects.length > 1
+    ? el("select", { "aria-label": "Project", onchange: (e) => pickProject(e.target.value) }, S.projects.map((p) => el("option", { value: p.id, selected: proj && p.id === proj.id }, p.name)))
+    : projectLabel();
+  const user = me.kind === "user" ? (me.user.name || me.user.email) : "OP";
+  return el("div", { class: "top" },
+    el("span", { class: "crumb" },
+      el("span", { class: "bpill" }, el("span", { class: "av", style: { width: "20px", height: "20px", borderRadius: "5px", fontSize: "10px" } }, initials(org.name || "O")), orgCtl, el("span", { class: "tag" }, plan)),
+      el("span", { class: "slash" }, "/"),
+      el("span", { class: "bpill" }, projCtl),
+      el("span", { class: "slash" }, "/"),
+      el("span", { class: "brchip" }, "main", el("span", { class: "tag", style: { borderColor: "rgba(62,207,142,.4)", color: "var(--g)", fontSize: "10px", padding: "0 4px" } }, "PRODUCTION"))),
+    el("a", { class: "bpill", href: "#setup", style: { color: "var(--t2)" } }, svgIconSmallSafe("setup"), "Connect"),
+    el("button", { class: "srch", style: { marginLeft: "auto" }, onclick: palette }, svgIconSmallSafe("requests"), "Search…", el("span", { class: "kbd", style: { marginLeft: "auto" } }, "⌘K")),
+    el("a", { class: "btn", href: "https://github.com/saief1/opengate/issues/new", target: "_blank", rel: "noopener" }, "Feedback"),
+    el("a", { class: "ib", href: "https://github.com/saief1/opengate#readme", target: "_blank", rel: "noopener", title: "Docs", "aria-label": "Docs" }, "?"),
+    el("a", { class: "ib", href: "#audit", title: "Audit log", "aria-label": "Audit log" }, svgIconSmallSafe("audit")),
+    el("button", { class: "av", title: user + " · sign out", onclick: logout }, initials(user)));
 }
+function svgIconSmallSafe(n) { const s = svgIcon(n); s.setAttribute("width", "14"); s.setAttribute("height", "14"); s.setAttribute("fill", "none"); s.setAttribute("stroke", "currentColor"); s.setAttribute("stroke-width", "1.6"); return s; }
 
 let renderSeq = 0, poller = null;
 async function render() {
@@ -279,10 +399,13 @@ async function render() {
   const agents = new Set(S.keys.filter((x) => !x.revoked && x.agent).map((x) => x.project_id + "/" + x.agent));
   S.counts.keys = S.keys.filter((x) => !x.revoked).length; S.counts.agents = agents.size;
   const actions = [], crumb = [];
-  const body = el("div", { class: "body" });
+  const flush = (r.page === "requests" || r.page === "providers") && !r.id;
+  const body = el("div", { class: "body" + (flush ? " flush" : "") });
   try { await PAGES[r.page](body, actions, crumb, r); } catch (e) { if (e.message !== "unauthorized") body.replaceChildren(el("div", { class: "card err-card" }, String(e.message || e))); }
   if (my !== renderSeq) return;
-  $("root").replaceChildren(el("div", { class: "app" }, sidebar(r.page), el("div", { class: "main" }, topbar(crumb.length ? crumb : el("b", {}, TITLES[r.page]), actions), body)));
+  const title = r.page === "overview" ? projectLabel() : (crumb.length ? crumb : TITLES[r.page]);
+  if (!flush) body.prepend(el("div", { class: "tr" }, el("h1", {}, title), r.page === "overview" && S.health ? el("span", { class: "bd g" }, el("span", { class: "gdot" }), S.health.ok ? "Healthy" : "Check gateway") : null, el("div", { class: "a" }, actions)));
+  $("root").replaceChildren(el("div", { class: "app" }, rail(r.page), side(r.page), el("div", { class: "main" }, topbar(), body)));
   window.scrollTo(0, 0);
   refreshChrome();
   Live.ensure();
@@ -294,29 +417,47 @@ async function refreshChrome() {
   if (ks) S.globalKill = !!ks.global;
   S.counts.requests = logs.total; S.counts.customers = new Set((cust.data || []).map((c) => c.customer_id)).size;
   S.health = { ok: ready, p50: ser && ser.latency ? ser.latency.p50_ms : 0 };
-  if (changed) { const sb = document.querySelector(".sb"); if (sb) sb.replaceWith(sidebar(route().page)); }
+  if (changed) { const r = route(); const nav = document.querySelector(".rail"); if (nav) { nav.replaceWith(rail(r.page)); document.querySelector(".side")?.replaceWith(side(r.page)); } }
 }
 
 // ---------- ⌘K palette ----------
-function palette() {
-  const items = [
-    ...(can("member") ? [S.globalKill
-      ? { label: "Release the global kill switch", hint: "action · kill switch", run: () => setGlobalKill(false) }
-      : { label: "Engage the global kill switch (stop all traffic)", hint: "action · kill switch", run: () => setGlobalKill(true) }] : []),
-    { label: "Kill a key, agent or customer…", hint: "action · kill switch", go: "#kill" },
-    ...Object.entries(TITLES).map(([k, t]) => ({ label: t, hint: "page", go: "#" + k })),
-    ...S.keys.filter((k) => !k.revoked).map((k) => ({ label: k.name, hint: "key · " + keyLabel(k), go: "#keys" })),
-    ...[...new Set(S.keys.filter((k) => k.agent).map((k) => k.agent))].map((a) => ({ label: a, hint: "agent", go: "#requests?q=" + encodeURIComponent("agent:" + a) })),
-    ...S.projects.map((p) => ({ label: p.name, hint: "project", go: "#policies?project=" + p.id })),
+function palette(seed) {
+  const groups = [
+    { h: "Actions", items: [
+      ...(can("member") ? [S.globalKill
+        ? { label: "Release the global kill switch", hint: "Guardrails", icon: "kill", kbd: "esc", run: () => setGlobalKill(false) }
+        : { label: "Trip global kill switch", hint: "Guardrails", icon: "kill", kbd: "⌘⇧K", run: () => setGlobalKill(true) }] : []),
+      { label: "Kill key…", hint: S.keys.filter((k) => !k.revoked).slice(0, 3).map((k) => k.name).join(", ") || "none", icon: "keys", go: "#kill" },
+      { label: "Kill agent…", hint: "", icon: "agents", go: "#kill" },
+      { label: "Block model…", hint: "", icon: "providers", go: "#policies" },
+    ]},
+    { h: "Navigate", items: [
+      ...Object.entries(TITLES).map(([k, t]) => ({ label: t, hint: "page", icon: ICONS[k] ? k : "overview", go: "#" + k })),
+      { label: "Guardrails → Kill switch", hint: "G K", icon: "kill", go: "#kill" },
+      { label: "Logs → status ≥ 400", hint: "G L", icon: "requests", go: "#requests?view=errors" },
+      { label: "Docs: connect", hint: "", icon: "setup", go: "#setup" },
+    ]},
+    { h: "Keys & projects", items: [
+      ...S.keys.filter((k) => !k.revoked).slice(0, 8).map((k) => ({ label: k.name, hint: "key · " + keyLabel(k), icon: "keys", go: "#keys" })),
+      ...S.projects.map((p) => ({ label: p.name, hint: "project", icon: "settings", go: "#policies?project=" + p.id })),
+    ]},
   ];
-  const input = el("input", { placeholder: "Search pages, keys, agents, projects or paste a request ID…", autocomplete: "off" });
+  const flat = groups.flatMap((g) => g.items.map((i) => ({ ...i, group: g.h })));
+  const input = el("input", { placeholder: "Search pages, keys, agents, projects or paste a request ID…", autocomplete: "off", value: seed || "" });
   const list = el("div", { class: "items" }); let sel = 0, shown = [];
   const draw = () => {
     const q = input.value.trim().toLowerCase();
-    shown = items.filter((i) => !q || (i.label + " " + i.hint).toLowerCase().includes(q)).slice(0, 12);
-    if (/^req_[\w]+$/.test(input.value.trim())) shown.unshift({ label: "Open request " + input.value.trim(), hint: "request", go: "#requests/" + input.value.trim() });
+    shown = flat.filter((i) => !q || (i.label + " " + i.hint + " " + i.group).toLowerCase().includes(q)).slice(0, 14);
+    if (/^req_[\w]+$/.test(input.value.trim())) shown.unshift({ label: "Open request " + input.value.trim(), hint: "request", icon: "requests", go: "#requests/" + input.value.trim(), group: "Requests" });
     sel = Math.min(sel, Math.max(0, shown.length - 1));
-    list.replaceChildren(...(shown.length ? shown.map((i, n) => el("div", { class: "pi" + (n === sel ? " sel" : ""), onclick: () => pick(i) }, i.label, el("span", { class: "k" }, i.hint))) : [el("div", { class: "empty" }, "No matches")]));
+    const nodes = []; let last = "";
+    if (!shown.length) nodes.push(el("div", { class: "empty" }, "No matches"));
+    shown.forEach((i, n) => {
+      if (i.group !== last) { last = i.group; nodes.push(el("div", { class: "gh" }, i.group)); }
+      const ic = ICONS[i.icon] ? svgIconSmallSafe(i.icon) : null;
+      nodes.push(el("div", { class: "pi" + (n === sel ? " sel" : ""), onclick: () => pick(i) }, ic, el("span", {}, i.label), i.hint ? el("span", { class: "mut", style: { fontSize: "11.5px" } }, i.hint) : null, el("span", { class: "k" }, i.kbd || "↵")));
+    });
+    list.replaceChildren(...nodes);
   };
   const pick = (i) => { closeModal(); if (i.run) i.run(); else location.hash = i.go; };
   input.addEventListener("input", () => { sel = 0; draw(); });
@@ -325,7 +466,9 @@ function palette() {
     if (e.key === "ArrowUp") { sel = Math.max(0, sel - 1); draw(); e.preventDefault(); }
     if (e.key === "Enter" && shown[sel]) pick(shown[sel]);
   });
-  $("modal-body").className = "modal-body pal"; $("modal-body").replaceChildren(input, list); $("modal").classList.remove("hidden"); draw(); input.focus();
+  const foot = el("div", { class: "foot" }, el("span", {}, "↑↓ navigate"), el("span", {}, "↵ select"), el("span", {}, "⌘K toggle"), el("span", { style: { marginLeft: "auto" } }, "OpenGate"));
+  $("modal-body").className = "modal-body pal"; $("modal-body").replaceChildren(input, list, foot); $("modal").classList.remove("hidden"); draw(); input.focus();
+  if (seed) input.setSelectionRange(seed.length, seed.length);
 }
 document.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k" && !document.querySelector(".auth")) { e.preventDefault(); palette(); }
@@ -402,25 +545,40 @@ PAGES.overview = async (root, actions, crumb, r) => {
   const anyKilled = S.projects.some((p) => p.killed);
   actions.push(liveIndicator(), tryItButton(),
     el("span", { class: "seg" }, RANGES.map(([v, l]) => el("button", { class: +v === hours ? "a" : "", onclick: () => setQuery({ h: v === "24" ? "" : v }) }, l))),
+    el("a", { class: "btn p", href: "#setup" }, "Connect"),
     can("member") ? el("a", { class: "btn k", href: "#kill" }, svgIconSmall("kill"), anyKilled || S.globalKill ? "Kill switch · active" : "Kill switch") : null);
-  const k = kpis([
-    ["Spend · " + rangeLabel(hours), usdBig(sm.cost_usd), [delta(sm.cost_usd, prev.cost_usd), prev.cost_usd ? " vs prior " + rangeLabel(hours) : "no prior traffic"]],
-    ["Requests", compact(sm.requests), [delta(sm.requests, prev.requests), " · " + (sm.requests / (hours * 3600)).toFixed(2) + " rps avg"]],
-    ["Tokens", compact(sm.tokens), sm.errors ? `${num(sm.errors)} errors · ${num(sm.blocked)} blocked` : "no errors"],
-    ["Budget used · " + new Date().toLocaleString("en-US", { month: "short" }), cap ? [pct(capSpent, cap), el("span", { class: "dim" }, "%")] : el("span", { class: "dim" }, "—"),
-      cap ? `${usd(capSpent, 0)} of ${usd(cap, 0)} ` + (orgCap ? "org cap" : "· sum of project caps") : `${usd(monthSpend)} this month · no monthly cap`],
-  ]);
+  const errRate = sm.requests ? ((sm.errors / sm.requests) * 100).toFixed(2) + "%" : "—";
+  const hitRate = sm.requests ? ((sm.cache_hits || 0) / sm.requests * 100).toFixed(1) + "%" : "—";
+  const mini = (l, v, d, cls) => el("div", { class: "card" }, el("div", { class: "l" }, l), el("div", { class: "v" }, v, d ? el("span", { class: "mini " + (cls || "mut") }, " ", d) : null));
+  const reqVals = bucketTotals(ser.series, "requests");
+  const costVals = bucketTotals(ser.series, "cost");
+  const ucard = (title, value, sub, values) => el("div", { class: "card", style: { padding: "16px" } },
+    el("div", { class: "row", style: { color: "var(--t2)", fontSize: "12.5px" } }, title, el("span", { class: "leg", style: { marginLeft: "auto" } }, el("span", {}, el("i", { style: { background: "var(--g)", display: "inline-block", width: "8px", height: "8px", borderRadius: "2px", marginRight: "5px" } }), "this window"))),
+    el("div", { style: { fontSize: "22px", margin: "4px 0 2px" } }, value),
+    el("div", { class: "mut", style: { fontSize: "12px", marginBottom: "12px" } }, sub),
+    barChart(values),
+    el("div", { class: "m mut", style: { display: "flex", fontSize: "10.5px", marginTop: "6px" } }, el("span", {}, dateShort(ser.since)), el("span", { style: { marginLeft: "auto" } }, dateShort(ser.now))));
+  const mt = {}; for (const p of models.series) { const m = (mt[p.name] ||= { cost: 0, req: 0 }); m.cost += p.cost_usd; m.req += p.requests; }
+  const tot = Object.values(mt).reduce((a, m) => a + m.cost, 0) || 1;
+  const topRows = Object.entries(mt).sort((a, b) => b[1].cost - a[1].cost).slice(0, 5);
+  const base = location.origin + "/v1";
+  const connect = el("div", { class: "card" },
+    el("div", { class: "hd" }, el("h3", {}, "Connect to your gateway"), el("span", { class: "sub" }, "Drop-in OpenAI-compatible"), el("div", { class: "r" }, el("a", { class: "btn sm", href: "#setup" }, "SDK snippets"))),
+    el("div", { class: "pad" },
+      el("div", { class: "copyline", style: { marginBottom: "10px" } }, el("span", {}, base), el("button", { class: "btn sm", onclick: () => copy(base, "Base URL") }, "Copy")),
+      el("div", { class: "code" }, el("span", { class: "c1" }, "import"), " OpenAI ", el("span", { class: "c1" }, "from"), " ", el("span", { class: "c2" }, '"openai"'), "\n\n",
+        el("span", { class: "c1" }, "const"), " client = ", el("span", { class: "c1" }, "new"), " ", el("span", { class: "c3" }, "OpenAI"), "({\n  baseURL: ", el("span", { class: "c2" }, JSON.stringify(base)), ",\n  apiKey: process.env.", el("span", { class: "c5" }, "OPENGATE_KEY"), ",\n})\n")));
+  const top = el("div", { class: "card" }, el("div", { class: "hd" }, el("h3", {}, "Top models"), el("span", { class: "sub", style: { marginLeft: "auto" } }, "by spend · " + rangeLabel(hours))),
+    topRows.length ? el("table", {}, el("tbody", {}, topRows.map(([name, m]) => el("tr", { class: "click", onclick: () => (location.hash = "#requests?q=" + encodeURIComponent("model:" + name)) },
+      el("td", {}, name), el("td", { class: "r m" }, usd(m.cost)), el("td", { style: { width: "120px" } }, el("span", { class: "bar" }, el("i", { style: { width: pct(m.cost, tot) + "%" } })))))))
+      : empty("No requests in this window"));
+  const activity = el("div", { class: "card" }, el("div", { class: "hd" }, el("h3", {}, "Recent activity")),
+    logs.data.length ? el("table", {}, el("tbody", {}, logs.data.slice(0, 5).map((l) => el("tr", { class: "click", onclick: () => (location.hash = "#requests/" + l.id) },
+      el("td", {}, el("span", { class: "bd " + (l.status < 400 ? "g" : BLOCK_CODES.includes(l.error_code) ? "r" : "y") }, l.status < 400 ? (l.agent || "ok") : (ERR_LABEL[l.error_code] || l.status))),
+      el("td", {}, (l.agent || keyName(l.key_id)) + " · " + l.model),
+      el("td", { class: "mut", style: { textAlign: "right", fontSize: "12px" } }, ago(l.ts)))))) : empty("Waiting for the first request"));
   const buckets = bucketRange(ser.since, ser.now, ser.bucket_seconds);
   const chart = card("Spend by provider", lineChart(seriesPoints(ser), { buckets, bucketSeconds: ser.bucket_seconds, height: 150 }), { sub: "USD / " + (ser.bucket_seconds >= 86400 ? "day" : "hour") });
-  const mt = {}; for (const p of models.series) { const m = (mt[p.name] ||= { cost: 0, req: 0 }); m.cost += p.cost_usd; m.req += p.requests; }
-  const tot = Object.values(mt).reduce((a, m) => a + m.cost, 0);
-  const rows = Object.entries(mt).sort((a, b) => b[1].cost - a[1].cost || b[1].req - a[1].req).slice(0, 6).map(([name, m]) => {
-    const pr = priceOf(P, name); const share = pct(m.cost, tot);
-    return el("tr", { class: "click", onclick: () => (location.hash = "#requests?q=" + encodeURIComponent("model:" + name)) }, el("td", {}, modelChip(name)), el("td", { class: "r m" }, num(m.req)),
-      el("td", { class: "r m" }, pr ? `${usd(pr.input)} · ${usd(pr.output)}` : el("span", { class: "mut", title: "Alias or model without a price-table entry" }, "—")),
-      el("td", { class: "r m" }, usd(m.cost)), el("td", { class: "m" }, share + "%", el("span", { class: "bar" }, el("i", { style: { width: share + "%" } }))));
-  });
-  const top = card("Top models", table(["Model", ">Requests", ">$ / 1M in · out", ">Cost", "Share"], rows, { cls: "tight", empty: empty("No requests in this window") }), { sub: "requested in last " + rangeLabel(hours), right: el("a", { class: "m mut", href: "#requests", style: { fontSize: "11px" } }, "View all →") });
   const rule = rules.data.find((x) => x.enabled);
   const policy = card("Routing policy", rule ? el("div", { class: "code" },
     el("span", { class: "c4" }, `# ${rules.data.length} rule${rules.data.length === 1 ? "" : "s"}, first match wins\n`), el("span", { class: "c3" }, "rule"), `: `, el("span", { class: "c2" }, JSON.stringify(rule.name)), "\n",
@@ -428,9 +586,39 @@ PAGES.overview = async (root, actions, crumb, r) => {
     rule.fallbacks.length ? ["fallbacks: ", el("span", { class: "c2" }, JSON.stringify(rule.fallbacks)), "\n"] : null, "scope: ", el("span", { class: "c1" }, rule.project_id ? projName(rule.project_id) : "all projects"))
     : empty("No routing rules yet", "Requests go to the model they ask for, with alias failover.", el("a", { class: "btn", href: "#policies" }, "Add a rule")), { right: rule ? el("span", { class: "st ok" }, "active") : null, sub: rule ? "priority " + rule.priority : "" });
   const feed = el("div", {}, liveCard("Live requests", logs.data));
-  root.append(el("div", { class: "g split" }, el("div", { class: "g" }, k, chart, top), el("div", { class: "g" }, feed, successCard(perf), latencyCard(perf, 5), policy)));
+  root.append(
+    el("div", { class: "sub" }, "Gateway ", el("span", { class: "m" }, location.host), " · ", num(S.projects.length), " projects · ", S.cfg.version ? String(S.cfg.version).replace(/^v?/, "v") : "dev",
+      " · p50 ", el("span", { class: "grn" }, ser.latency && ser.latency.samples ? ms(ser.latency.p50_ms) : "—"),
+      cap ? " · budget " + usd(capSpent, 0) + " / " + usd(cap, 0) + (orgCap ? " org cap" : "") : " · " + usd(monthSpend) + " this month"),
+    el("div", { class: "kpi-row" },
+      mini("Requests · " + rangeLabel(hours), num(sm.requests), deltaText(sm.requests, prev.requests), "grn"),
+      mini("Spend · " + rangeLabel(hours), usd(sm.cost_usd), sm.requests ? usd(sm.cost_usd / sm.requests, 4) + "/req" : ""),
+      mini("p95 latency", ser.latency && ser.latency.samples ? num(Math.round(ser.latency.p95_ms)) + " ms" : "—", ser.latency && ser.latency.samples ? "p50 " + ms(ser.latency.p50_ms) : "no samples", "grn"),
+      mini("Error rate", errRate, sm.blocked ? num(sm.blocked) + " blocked" : "errors " + num(sm.errors), sm.errors ? "amb" : "grn"),
+      mini("Cache hit", hitRate, (sm.cache_saved_usd ? "saved " + usd(sm.cache_saved_usd) : num(sm.cache_hits || 0) + " hits"), "grn")),
+    el("div", { class: "g g3" },
+      ucard("Requests", compact(sm.requests), "Total over " + rangeLabel(hours), reqVals),
+      ucard("Spend", usd(sm.cost_usd, 0), "Across providers", costVals),
+      ucard("Tokens", compact(sm.tokens), "Total tokens · per-bucket series is not stored", [])),
+    el("div", { class: "g", style: { gridTemplateColumns: "1.25fr 1fr", marginTop: "16px" } }, connect, el("div", { class: "g" }, top, activity)),
+    el("div", { class: "g split", style: { marginTop: "16px" } }, el("div", { class: "g" }, chart, feed), el("div", { class: "g" }, successCard(perf), latencyCard(perf, 5), policy)));
   poller = setInterval(async () => { if (Live.state === "live" || document.hidden || !$("modal").classList.contains("hidden")) return; const l = await soft("/logs?limit=11", null); if (l) feed.replaceChildren(liveCard("Live requests", l.data)); }, 5000);
 };
+function bucketTotals(series, metric) {
+  const m = new Map();
+  for (const p of series || []) { const t = +new Date(p.bucket); m.set(t, (m.get(t) || 0) + (metric === "requests" ? p.requests : Number(p.cost_usd) || 0)); }
+  return [...m.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v);
+}
+function barChart(values) {
+  if (!values.length || values.every((v) => !v)) return el("div", { class: "empty", style: { padding: "18px 8px" } }, "No series in this window");
+  const max = Math.max(...values, 1);
+  return el("div", { class: "bars" }, values.map((v) => el("i", { style: { height: Math.max(3, (v / max) * 100) + "%" } })));
+}
+function deltaText(cur, prev) {
+  if (!prev) return "";
+  const d = ((cur - prev) / prev) * 100;
+  return (d >= 0 ? "▲ " : "▼ ") + Math.abs(d).toFixed(1) + "%";
+}
 function svgIconSmall(n) { const s = svgIcon(n); s.setAttribute("width", 13); s.setAttribute("height", 13); s.setAttribute("fill", "none"); s.setAttribute("stroke", "currentColor"); s.setAttribute("stroke-width", 2); return s; }
 
 // Requests: free-text filter "agent:x model:y key:z customer:c project:p"
@@ -452,31 +640,68 @@ PAGES.requests = async (root, actions, crumb, r) => {
   const [logs, ser] = await Promise.all([api("/logs?" + params), api("/series?hours=24&by=provider")]);
   if (bare) { logs.data = []; logs.total = 0; } // free text isn't a server-side filter; don't pretend it matched everything
   const sm = ser.summary;
-  actions.push(liveIndicator(), tryItButton(), el("span", { class: "btn", style: { cursor: "default" } }, "Last 24h"));
-  const input = el("input", { class: "inp m", value: q, placeholder: "agent:planner model:openai/gpt-4o-mini customer:acme key:name project:name", style: { flex: 1, border: 0, background: "transparent", boxShadow: "none" } });
-  const filterBar = el("form", { class: "card", style: { display: "flex", alignItems: "center", gap: "8px", padding: "4px 12px" }, onsubmit: (e) => { e.preventDefault(); setQuery({ q: input.value.trim(), p: "" }); } },
-    el("span", { class: "m mut" }, "›"), input, el("span", { class: "kbd" }, "↵"));
+  const input = el("input", { class: "inp m", value: q, placeholder: 'status >= 400 and agent = "planner"   ·   or agent: model: key: customer: project:', style: { flex: 1, border: 0, background: "transparent", boxShadow: "none", height: "26px" } });
+  const nFilters = Object.keys(f).length + (view !== "all" ? 1 : 0);
+  const popWrap = el("div", { style: { position: "relative" } });
+  const fields = [["status", "status", "int2"], ["agent", "agent", "text"], ["model", "model", "text"], ["key", "api_key", "text"], ["customer", "customer", "text"], ["project", "project", "text"], ["guard", "guardrail", "text"]];
+  const openFilters = () => {
+    const existing = popWrap.querySelector(".filter-pop");
+    if (existing) { existing.remove(); return; }
+    const menu = el("div", { class: "filter-pop" }, el("div", { class: "gh" }, "Add filter"),
+      fields.map(([key, label, typ], i) => el("button", { type: "button", class: i === 0 ? "on" : "", onclick: () => {
+        menu.remove();
+        if (key === "status") { setQuery({ view: view === "errors" ? "" : "errors", p: "" }); return; }
+        if (key === "guard") { setQuery({ view: "guard", p: "" }); return; }
+        const next = (q ? q + " " : "") + key + ":";
+        setQuery({ q: next, p: "" });
+      } }, label, el("span", { class: "ty" }, typ))));
+    popWrap.append(menu);
+    setTimeout(() => document.addEventListener("click", () => menu.remove(), { once: true }), 0);
+  };
+  const chips = [
+    view === "errors" ? el("button", { class: "bd b", onclick: () => setQuery({ view: "", p: "" }) }, "status ≥ 400 ✕") : null,
+    view === "guard" ? el("button", { class: "bd b", onclick: () => setQuery({ view: "", p: "" }) }, "guardrail ✕") : null,
+    ...Object.entries(f).map(([k, v]) => el("button", { class: "bd b", onclick: () => { const nq = q.replace(new RegExp("\\b" + k + ":" + v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "").replace(/\s+/g, " ").trim(); setQuery({ q: nq, p: "" }); } }, k + " = " + v + " ✕")),
+  ].filter(Boolean);
   const exportCsv = () => download(`opengate-requests-${new Date().toISOString().slice(0, 10)}.csv`, toCSV([["id", "time", "project", "key", "agent", "customer", "model", "provider", "provider_model", "prompt_tokens", "completion_tokens", "cost_usd", "billed_usd", "latency_ms", "status", "error_code", "attempts", "route", "cache_hit", "guard"],
     ...logs.data.map((l) => [l.id, l.ts, projName(l.project_id), keyName(l.key_id), l.agent, l.customer_id, l.model, l.provider, l.provider_model, l.prompt_tokens, l.completion_tokens, l.cost_usd, l.billed_usd, l.latency_ms, l.status, l.error_code, l.attempts, l.route, l.cache_hit, l.guard])]));
-  const rows = logs.data.map((l) => el("tr", { class: "click", "data-id": l.id, onclick: () => (location.hash = "#requests/" + l.id) },
-    el("td", { class: "m t2" }, l.id), el("td", { class: "m mut" }, hhmmss(l.ts)), el("td", {}, l.agent || el("span", { class: "mut" }, keyName(l.key_id))), el("td", {}, l.customer_id || el("span", { class: "mut" }, "—")),
-    el("td", {}, modelChip(l.model, modelSub(l))), el("td", { class: "r m" }, l.prompt_tokens + l.completion_tokens ? `${num(l.prompt_tokens)} / ${num(l.completion_tokens)}` : "– / –"),
-    el("td", { class: "r m" }, l.cost_usd ? usd(l.cost_usd, 4) : "–"), el("td", { class: "r m" }, l.latency_ms ? ms(l.latency_ms) : "–"), el("td", {}, statusTag(l)),
-    el("td", {}, el("span", { style: { display: "inline-flex", gap: "6px" } }, logTags(l)))));
-  const pager = el("span", { class: "m mut", style: { fontSize: "11px", display: "flex", gap: "8px", alignItems: "center" } },
-    logs.total ? `${page * per + 1}–${Math.min(logs.total, page * per + logs.data.length)} of ${num(logs.total)}` : "0 results",
-    page > 0 ? el("button", { class: "btn sm", onclick: () => setQuery({ p: page - 1 || "" }) }, "←") : null,
-    (page + 1) * per < logs.total ? el("button", { class: "btn sm", onclick: () => setQuery({ p: page + 1 }) }, "→") : null);
-  root.append(el("div", { class: "g" },
-    kpis([["Requests · 24h", num(sm.requests), [delta(sm.requests, ser.previous.requests), " · " + (sm.requests / 86400).toFixed(2) + " rps avg"]],
-      ["Cost", usdBig(sm.cost_usd), sm.requests ? "avg " + usd(sm.cost_usd / sm.requests, 4) + " / req" : "no requests"],
-      ["P50 latency", ser.latency.samples ? [num(Math.round(ser.latency.p50_ms)), el("small", {}, " ms")] : el("span", { class: "dim" }, "—"), ser.latency.samples ? "p95 " + ms(ser.latency.p95_ms) + " · successful, uncached" : "no successful requests"],
-      ["Errors", sm.requests ? [((sm.errors / sm.requests) * 100).toFixed(1), el("span", { class: "dim" }, "%")] : el("span", { class: "dim" }, "—"), `${num(sm.errors)} errors · ${num(sm.blocked)} blocked by policy`]]),
-    el("div", { style: { display: "flex", gap: "8px", alignItems: "stretch", flexWrap: "wrap" } }, el("div", { style: { flex: "1 1 260px", minWidth: 0 } }, filterBar),
-      seg([["all", "All"], ["errors", "Errors"], ["guard", "Guardrail"]], view, (v) => setQuery({ view: v === "all" ? "" : v, p: "" })),
-      el("button", { class: "btn", onclick: exportCsv, disabled: !logs.data.length, title: "Exports the rows on this page" }, "Export CSV")),
-    card("Request log", table(["Request ID", "Time", "Agent", "Customer", "Model", ">Tokens", ">Cost", ">Latency", "Status", ""], rows,
-      { cls: "tight", empty: bare ? empty("Use field filters", `"${bare}" isn't a filter. Search with agent:, model:, key:, customer: or project:, or paste a request ID.`) : empty(q || view !== "all" ? "No requests match this filter" : "No requests yet", q || view !== "all" ? "Clear the filter to see everything." : "Requests appear here as soon as traffic flows through the gateway.") }), { sub: "newest first", right: pager })));
+  const sel = r.q.get("sel") || (logs.data[0] && logs.data[0].id) || "";
+  const rows = logs.data.map((l) => el("tr", { class: "click" + (l.id === sel ? " sel" : ""), "data-id": l.id, onclick: () => setQuery({ sel: l.id }) },
+    el("td", { class: "m mut" }, hhmmss(l.ts)), el("td", {}, statusTag(l)), el("td", {}, l.agent || el("span", { class: "mut" }, keyName(l.key_id))),
+    el("td", { class: "m" }, l.model), el("td", { class: "r m" }, l.prompt_tokens + l.completion_tokens ? `${num(l.prompt_tokens)} / ${num(l.completion_tokens)}` : "– / –"),
+    el("td", { class: "r m" }, l.cost_usd ? usd(l.cost_usd, 4) : "–"), el("td", { class: "r m" }, l.latency_ms ? ms(l.latency_ms) : "–")));
+  const head = el("tr", {}, [["timestamp", "timestamptz"], ["status", "int2"], ["agent", "text"], ["model", "text"], ["tokens", ""], ["cost", "num"], ["ms", "int4"]].map(([h, ty], i) => el("th", { class: i >= 4 ? "r" : "" }, h, ty ? el("em", {}, ty) : null)));
+  const chosen = logs.data.find((l) => l.id === sel);
+  const kv = (a, b) => el("div", { class: "kvr" }, el("span", {}, a), el("span", {}, b || "—"));
+  const panel = el("aside", { class: "detail" }, chosen ? [
+    el("div", { class: "hd" }, el("b", { class: "m", style: { fontWeight: 500 } }, chosen.id), statusTag(chosen), el("a", { class: "ib", href: "#requests/" + chosen.id, title: "Open full request", style: { marginLeft: "auto" } }, "↗")),
+    kv("time", new Date(chosen.ts).toLocaleString()), kv("agent", chosen.agent || "—"), kv("customer", chosen.customer_id || "—"),
+    kv("route", chosen.route || chosen.model), kv("provider", chosen.provider ? chosen.provider + " / " + (chosen.provider_model || "") : "—"),
+    kv("tokens", `${num(chosen.prompt_tokens)} in · ${num(chosen.completion_tokens)} out`), kv("cost", chosen.cost_usd ? usd(chosen.cost_usd, 4) : "—"),
+    kv("latency", chosen.latency_ms ? ms(chosen.latency_ms) : "—"), kv("cache", chosen.cache_hit ? "hit" : "miss"), kv("key", keyName(chosen.key_id)),
+    el("div", { class: "pad" }, el("a", { class: "btn", href: "#requests/" + chosen.id }, "Open request")),
+  ] : empty("No row selected", "Requests show up here as traffic flows."));
+  const pager = el("div", { class: "pager" },
+    el("button", { class: "btn sm", disabled: page <= 0, onclick: () => setQuery({ p: page - 1 || "" }) }, "‹"),
+    el("span", {}, logs.total ? `${page * per + 1}–${Math.min(logs.total, page * per + logs.data.length)} of ${num(logs.total)}` : "0 results"),
+    el("button", { class: "btn sm", disabled: (page + 1) * per >= logs.total, onclick: () => setQuery({ p: page + 1 }) }, "›"),
+    el("span", { class: "m", style: { marginLeft: "auto" } }, "requests · 24h " + num(sm.requests) + " · p95 " + (ser.latency.samples ? ms(ser.latency.p95_ms) : "—")));
+  root.append(el("div", { class: "logs" },
+    el("div", { class: "col" },
+      el("form", { class: "logbar", onsubmit: (e) => { e.preventDefault(); const v = input.value.trim(); if (/^req_\w+$/.test(v)) { location.hash = "#requests/" + v; return; } setQuery({ q: v, p: "", sel: "" }); } },
+        el("div", { class: "inp grow" }, input, el("span", { class: "m mut", style: { marginLeft: "auto", fontSize: "11px" } }, "filter")),
+        popWrap.append(el("button", { class: "btn", type: "button", onclick: (e) => { e.preventDefault(); e.stopPropagation(); openFilters(); } }, "Filters", nFilters ? el("span", { class: "bd g" }, String(nFilters)) : null)),
+        popWrap,
+        seg([["all", "All"], ["errors", "Errors"], ["guard", "Guard"]], view, (v) => setQuery({ view: v === "all" ? "" : v, p: "", sel: "" })),
+        el("button", { class: "btn", type: "button", onclick: () => render(), title: "Refresh" }, "↻"),
+        el("button", { class: "btn", type: "button", onclick: exportCsv, disabled: !logs.data.length }, "Export")),
+      el("div", { class: "chips-line" }, chips.length ? chips : el("span", { class: "mut", style: { fontSize: "12px" } }, "No filters"),
+        el("span", { class: "mut", style: { marginLeft: "auto", fontSize: "12px" } }, "Showing ", el("span", { style: { color: "var(--tx)" } }, num(logs.data.length)), " of ", num(logs.total || logs.data.length), liveIndicator())),
+      el("div", { style: { padding: "12px 16px 8px", borderBottom: ".5px solid var(--ln)" } }, barChart(bucketTotals(ser.series, "requests").slice(-48))),
+      logs.data.length ? el("div", { class: "tscroll" }, el("table", { class: "tg" }, el("thead", {}, head), el("tbody", {}, rows)))
+        : (bare ? empty("Use field filters", `"${bare}" isn't a filter. Search with agent:, model:, key:, customer: or project:, or paste a request ID.`) : empty(q || view !== "all" ? "No requests match this filter" : "No requests yet", q || view !== "all" ? "Clear the filter to see everything." : "Requests appear here as soon as traffic flows through the gateway.")),
+      pager),
+    panel));
 };
 
 async function requestDetail(root, actions, crumb, id) {
@@ -613,9 +838,14 @@ PAGES.keys = async (root, actions) => {
     ["Spend today", usdBig(today), "UTC day · all keys"]]);
   kpiCard.id = "keys-kpis";
   const chart = card("Spend by key", lineChart(seriesPoints(ser, "cost", keyName), { buckets: bucketRange(ser.since, ser.now, ser.bucket_seconds), height: 140 }), { sub: "USD / hour · 24h" });
-  root.append(el("div", { class: "g split" },
-    el("div", { class: "g" }, kpiCard, card("Virtual keys", tableHost), chart),
-    el("div", { class: "g" }, newKeyCard(), apiCard(), scopesCard(live))));
+  const gateway = location.origin + "/v1";
+  root.append(
+    el("div", { class: "card urlcard" },
+      el("div", {}, el("div", { style: { fontWeight: "500" } }, "Project URL"), el("div", { class: "mut", style: { fontSize: "12.5px" } }, "Send OpenAI-compatible requests here")),
+      el("button", { class: "inp m", type: "button", title: "Copy project URL", onclick: () => copy(gateway, "Project URL") }, gateway)),
+    el("div", { class: "g split" },
+      el("div", { class: "g" }, kpiCard, card("Virtual keys", tableHost), chart),
+      el("div", { class: "g" }, newKeyCard(), apiCard(), scopesCard(live))));
 };
 function keyModal(k) {
   const a = el("input", { class: "inp", value: (k.allowed_models || []).join(", "), placeholder: "all models" }), d = el("input", { class: "inp", value: (k.denied_models || []).join(", ") });
@@ -822,6 +1052,10 @@ PAGES.budgets = async (root, actions, crumb, r) => {
   const refV = orgDaily || projDaily, refLabel = orgDaily ? "org daily cap " + usd(orgDaily, 0) + (oc.source === "config" ? " (server default)" : "") : "sum of project caps " + usd(projDaily, 0);
   root.append(el("div", { class: "g split" },
     el("div", { class: "g" },
+      el("div", { class: "kpi-row" },
+        el("div", { class: "card" }, el("div", { class: "l" }, "Spend · " + new Date().toLocaleString("en-US", { month: "long" })), el("div", { class: "v" }, usdBig(ov.month.cost_usd)), el("div", { class: "mut mini" }, refV ? "daily reference " + usd(refV, 0) : "no daily cap set")),
+        el("div", { class: "card" }, el("div", { class: "l" }, "Daily spend"), barChart(dayBuckets.slice(-24).map((b) => days[b] || 0))),
+        el("div", { class: "card" }, el("div", { class: "l" }, "Blocked · 24h"), el("div", { class: "v" }, num(allBlocks)), el("div", { class: "mut mini" }, num(budgetBlocks) + " budget refusals"))),
       kpis([["Limits", num(S.limits.length), "keys, agents, projects"], ["At risk", num(atRisk.length), "≥ 75% used"], ["Blocked · 24h", num(budgetBlocks), `budget refusals · ${num(allBlocks)} blocked total`],
         ["Org spend · " + new Date().toLocaleString("en-US", { month: "short" }), usdBig(ov.month.cost_usd), "month to date (UTC)"]]),
       card("Limits", rows.length ? el("div", {}, rows) : empty(scope === "all" ? "No limits yet" : "No " + scope + " limits", "Cap spend per key, agent or project. Over-limit calls are refused before they reach a provider.", can("admin") ? el("button", { class: "btn gr", onclick: () => limitModal() }, "+ New limit") : null),
@@ -900,7 +1134,18 @@ function orgCapCard(oc) {
 
 // ---------- kill switch page ----------
 async function setGlobalKill(kill) {
-  if (kill && !confirm("Engage the GLOBAL kill switch? Every request in this organization gets 403 and in-flight streams are aborted until you release it.")) return;
+  const name = projectLabel();
+  if (kill) {
+    const ok = await confirmTyped({
+      title: "Trip kill switch?",
+      sub: name + " · organization",
+      text: "Every request in this organization gets 403 org_killed and in-flight streams are aborted until you release the switch.",
+      note: "Confirmation is the active project name. The switch itself is organization-wide.",
+      expect: name,
+      confirm: "Trip kill switch",
+    });
+    if (!ok) return;
+  }
   const r = await api("/kill-switch", { method: "POST", body: { scope: "global", killed: kill } });
   S.globalKill = kill; toast(kill ? `Global kill switch engaged · ${r.aborted_inflight} in-flight aborted` : "Global kill switch released"); render();
 }
@@ -928,7 +1173,7 @@ PAGES.kill = async (root, actions) => {
   const big = el("div", { class: "card killbox killglobal" + (ks.global ? " on" : "") },
     el("div", { class: "kh" }, el("span", { class: "ki" }, svgIconSmall("kill")), el("b", { style: { fontWeight: 500 } }, "Global kill switch"), ks.global ? st("bk", "ENGAGED") : st("ok", "Traffic flowing")),
     el("div", { class: "big" }, ks.global ? "Every request in this organization is refused." : "Stop every AI request in this organization, now."),
-    el("div", { class: "t2", style: { fontSize: "12.5px" } }, ks.global ? `Engaged ${ago(g.killed_at)}${g.actor ? " by " + g.actor : ""}. New requests get 403 org_killed.` : "New requests get 403 and in-flight streams are aborted. Release it here or from ⌘K."),
+    el("div", { class: "t2", style: { fontSize: "12.5px" } }, ks.global ? `Engaged ${ago(g.killed_at)}${g.actor ? " by " + g.actor : ""}. New requests get 403 org_killed.` : "New requests get 403 and in-flight streams are aborted. Engaging it requires typing " + projectLabel() + "."),
     el("div", { style: { marginTop: "16px" } }, isMember ? el("button", { class: "btn bigkill " + (ks.global ? "gr" : "kf"), onclick: () => setGlobalKill(!ks.global) }, svgIconSmall("kill"), ks.global ? "Release global kill switch" : "STOP ALL TRAFFIC") : el("span", { class: "mut" }, "Members and above can use the kill switch.")));
   const keyRows = live.map((k) => el("tr", {}, el("td", {}, k.name, el("div", { class: "m mut", style: { fontSize: "11px" } }, keyLabel(k) + " · " + projName(k.project_id))), el("td", { class: "m" }, k.agent || "—"),
     el("td", {}, k.killed ? st("bk", "Killed") : st("ok", "Active")),
@@ -995,7 +1240,7 @@ PAGES.policies = async (root, actions, crumb, r) => {
   actions.push(el("select", { class: "inp", style: { padding: "5px 26px 5px 10px" }, onchange: (e) => setQuery({ project: e.target.value }) }, S.projects.map((p) => el("option", { value: p.id, selected: p.id === proj.id }, "Project · " + p.name))));
   const isAdmin = can("admin"), isMember = can("member");
   const killProj = async (kill) => {
-    if (kill && !confirm(`Kill project ${proj.name}? Every key in it gets 403 and in-flight streams are aborted.`)) return;
+    if (kill && !(await confirmTyped({ title: "Kill project?", sub: proj.name, text: "Every key in this project gets 403 and in-flight streams are aborted.", expect: proj.name, confirm: "Kill project" }))) return;
     await api(`/projects/${proj.id}/${kill ? "kill" : "unkill"}`, { method: "POST" }); toast(kill ? "Project killed" : "Project revived"); render();
   };
   const killbox = el("div", { class: "card killbox" }, el("div", { class: "kh" }, el("span", { class: "ki" }, svgIconSmall("kill")), el("b", { style: { fontWeight: 500 } }, "Kill switch"),
@@ -1045,6 +1290,75 @@ function modelListModal(p) {
     el("div", { class: "acts2" }, el("button", { class: "btn", type: "button", onclick: closeModal }, "Cancel"), el("button", { class: "btn gr", type: "submit" }, "Save"))));
 }
 
+// Models table editor. Context window and 30-day uptime are not in the API, so those cells stay blank.
+function modelsEditor(p, P, perf) {
+  const perfBy = Object.fromEntries((perf.models || []).map((m) => [m.model, m]));
+  const routes = p.routes || {};
+  const ids = new Set(Object.keys(P).filter((k) => P[k] && typeof P[k] === "object" && "input" in P[k]));
+  Object.values(routes).forEach((ts) => (ts || []).forEach((m) => ids.add(m)));
+  (perf.models || []).forEach((m) => m.model && ids.add(m.model));
+  const all = [...ids].sort();
+  let q = "", page = 0, selected = "";
+  const pageSize = 14;
+  const host = el("div", { class: "models-editor" });
+  const search = el("input", { class: "inp", placeholder: "Filter models", "aria-label": "Filter models", style: { width: "200px" } });
+  const count = el("span", { class: "mut", style: { fontSize: "12px" } });
+  const selLabel = el("span", { class: "mut", style: { fontSize: "12px" } });
+  const tableHost = el("div", { class: "tscroll" });
+  const pager = el("div", { class: "pager" });
+  const draw = () => {
+    const filtered = all.filter((id) => !q || id.toLowerCase().includes(q));
+    const pages = Math.max(1, Math.ceil(filtered.length / pageSize) || 1);
+    if (page > pages - 1) page = pages - 1;
+    const slice = filtered.slice(page * pageSize, page * pageSize + pageSize);
+    const head = el("tr", {},
+      [["id", "text"], ["provider", "text"], ["context", "n/a"], ["input $/1M", "numeric"], ["output $/1M", "numeric"], ["p50 ms", "int4"], ["uptime 30d", "n/a"], ["route", "text"]]
+        .map(([h, ty], i) => el("th", { class: i >= 2 && i <= 6 ? "n" : "" }, h, el("em", {}, ty))));
+    const rows = slice.map((id) => {
+      const price = priceOf(P, id);
+      const perfm = perfBy[id];
+      const aliases = Object.entries(routes).filter(([, ts]) => (ts || []).includes(id)).map(([a]) => a);
+      const prov = id.includes("/") ? id.slice(0, id.indexOf("/")) : "—";
+      return el("tr", { class: selected === id ? "sel" : "", onclick: () => { selected = selected === id ? "" : id; draw(); } },
+        el("td", { class: "m" }, id),
+        el("td", {}, prov),
+        el("td", { class: "m n mut", title: "Context window is not in the pricing catalog" }, "—"),
+        el("td", { class: "m n" }, price ? usd(price.input, 2) : "—"),
+        el("td", { class: "m n" }, price && price.output != null ? usd(price.output, 2) : "—"),
+        el("td", { class: "m n" }, perfm && perfm.requests ? num(Math.round(perfm.p50_ms)) : "—"),
+        el("td", { class: "m n mut", title: "30-day uptime is not stored" }, "—"),
+        el("td", {}, aliases.length ? aliases.map((a) => el("span", { class: "bd b", style: { marginRight: "4px" } }, a)) : el("span", { class: "mut" }, "—")));
+    });
+    tableHost.replaceChildren(el("table", { class: "tg" }, el("thead", {}, head), el("tbody", {}, rows.length ? rows : el("tr", {}, el("td", { colspan: "8" }, "No models in the pricing file or route aliases")))));
+    count.textContent = filtered.length + (filtered.length === 1 ? " model" : " models");
+    selLabel.textContent = selected ? "1 row selected" : "";
+    pager.replaceChildren(
+      el("button", { class: "btn sm", type: "button", disabled: page === 0, onclick: () => { page--; draw(); } }, "‹"),
+      el("span", {}, "Page " + (page + 1) + " of " + pages),
+      el("button", { class: "btn sm", type: "button", disabled: page >= pages - 1, onclick: () => { page++; draw(); } }, "›"),
+      el("span", {}, (slice.length ? page * pageSize + 1 : 0) + "–" + (page * pageSize + slice.length) + " of " + filtered.length),
+      el("span", { class: "m", style: { marginLeft: "auto" } }, "pricing.models"));
+  };
+  search.addEventListener("input", () => { q = search.value.trim().toLowerCase(); page = 0; draw(); });
+  const exportCsv = () => download("opengate-models.csv", toCSV([["id", "input_per_1m", "output_per_1m", "p50_ms", "requests_24h", "routes"], ...all.map((id) => {
+    const price = priceOf(P, id) || {}; const perfm = perfBy[id] || {};
+    const aliases = Object.entries(routes).filter(([, ts]) => (ts || []).includes(id)).map(([a]) => a).join(" ");
+    return [id, price.input ?? "", price.output ?? "", perfm.requests ? perfm.p50_ms : "", perfm.requests ?? "", aliases];
+  })]));
+  host.append(
+    el("div", { class: "logbar" },
+      search,
+      el("button", { class: "btn p", type: "button", onclick: () => modal("Models come from config", el("div", { class: "t2", style: { fontSize: "13px", lineHeight: "1.5" } }, "The dashboard does not create provider models. Add prices in the pricing file and aliases under routes in the gateway config, then sync pricing."), el("div", { class: "acts2" }, el("button", { class: "btn", type: "button", onclick: closeModal }, "Close"))) }, "+ Add model"),
+      selLabel,
+      el("div", { class: "row", style: { marginLeft: "auto" } },
+        count,
+        el("button", { class: "btn", type: "button", onclick: exportCsv, disabled: !all.length }, "Export"),
+        me.kind === "token" ? el("button", { class: "btn", type: "button", onclick: async () => { await api("/pricing/reload", { method: "POST" }); pricingCache = null; toast("Pricing reloaded"); render(); } }, "Sync pricing") : null)),
+    tableHost, pager);
+  draw();
+  return host;
+}
+
 // ---------- providers ----------
 PAGES.providers = async (root, actions) => {
   const [p, pk, ser, auto, recent, P] = await Promise.all([api("/providers"), soft("/provider-keys", { data: [] }), api("/series?hours=24&by=provider"), soft("/routing/auto", { enabled: false, models: [] }), api("/logs?limit=500"), pricing()]);
@@ -1072,7 +1386,8 @@ PAGES.providers = async (root, actions) => {
       el("div", { class: "acts2" }, el("button", { class: "btn", type: "button", onclick: closeModal }, "Cancel"), el("button", { class: "btn gr", type: "submit" }, "Store key"))));
   };
   const priced = [...new Set([...routes.flatMap(([, t]) => t), ...(auto.models || []).map((m) => m.model)])].filter((m) => priceOf(P, m)).slice(0, 6);
-  root.append(el("div", { class: "g split380" },
+  root.append(modelsEditor(p, P, perf));
+  root.append(el("div", { class: "g split380", style: { padding: "28px 32px" } },
     el("div", { class: "g" },
       kpis([["Connected", num(p.data.length), `${pk.data.length} stored key${pk.data.length === 1 ? "" : "s"} · ${p.data.filter((x) => x.key_source === "env").length} from env`],
         ["Failovers", num(failovers.length), `in the last ${num(recent.data.length)} requests`], ["Models priced", num(Object.keys(P).length + (P._patterns || []).length), `entries · via ${routes.length + (auto.enabled ? 1 : 0)} alias${routes.length + (auto.enabled ? 1 : 0) === 1 ? "" : "es"}`]]),
@@ -1166,7 +1481,20 @@ PAGES.team = async (root) => {
   const pw = me.kind === "user" ? (() => { const cur = el("input", { class: "inp", type: "password", autocomplete: "current-password", placeholder: "current" }), nw = el("input", { class: "inp", type: "password", autocomplete: "new-password", minlength: 10, placeholder: "new (10+ chars)" });
     return el("form", { class: "kvr", style: { gap: "8px" }, onsubmit: async (e) => { e.preventDefault(); await api("/auth/password", { method: "POST", body: { current_password: cur.value, new_password: nw.value } }); toast("Password changed; other sessions signed out"); e.target.reset(); } },
       el("span", {}, "Password"), el("span", { style: { display: "flex", gap: "6px" } }, cur, nw, el("button", { class: "btn sm", type: "submit" }, "Change"))); })() : null;
-  root.append(el("div", { class: "g split420" },
+  const proj = activeProject();
+  const nameInput = el("input", { class: "inp", value: org.name || "", disabled: !can("owner"), "aria-label": "Organization name" });
+  root.append(
+    el("div", { class: "page-tabs" }, el("span", { class: "on" }, "General"), el("a", { href: "#team" }, "Team"), el("a", { href: "#audit" }, "Audit log"), el("a", { href: "#billing" }, "Billing")),
+    el("div", { class: "card setcard" },
+      el("div", { class: "setrow" }, el("div", {}, el("div", {}, "Organization name"), el("div", { class: "mut" }, "Shown in the breadcrumb")), nameInput),
+      el("div", { class: "setrow" }, el("div", {}, el("div", {}, "Organization ID"), el("div", { class: "mut" }, "Used in the admin API")), el("div", { class: "inp m" }, org.id || "—")),
+      el("div", { class: "setrow" }, el("div", {}, el("div", {}, "Active project"), el("div", { class: "mut" }, "The project selected in the breadcrumb")), el("div", { class: "inp m" }, proj ? proj.name : "—")),
+      el("div", { class: "setrow" }, el("div", {}, el("div", {}, "Project ID")), el("div", { class: "inp m" }, proj ? proj.id : "—")),
+      proj ? el("div", { class: "setrow" }, el("div", {}, el("div", {}, "Store request bodies"), el("div", { class: "mut" }, proj.name + " · prompts and completions in the request log")), toggleBodies(proj)) : null,
+      el("div", { class: "setacts" }, can("owner") ? el("button", { class: "btn p", type: "button", onclick: async () => { const n = nameInput.value.trim(); if (!n || n === org.name) return; await api("/org", { method: "PATCH", body: { name: n } }); await loadMe(); toast("Organization renamed"); render(); } }, "Save") : el("span", { class: "mut" }, "Owners can rename the organization"))),
+    el("div", { class: "card dangerzone" },
+      el("div", { class: "setrow" }, el("div", {}, el("div", {}, "Kill switch"), el("div", { class: "mut" }, "Stop organization traffic. You type the active project name to confirm.")), el("a", { class: "btn k", href: "#kill" }, "Open kill switch"))),
+    el("div", { class: "g split420" },
     el("div", { class: "g" },
       kpis([["Seats", seats, plan ? plan.name + " plan" : "self-hosted · no seat limit"], ["Projects", num(S.projects.length), plan ? (plan.max_projects ? `of ${plan.max_projects} on ${plan.name}` : "unlimited on " + plan.name) : "unlimited"], ["Pending invites", num(pending.length), "invite by email link"]]),
       card("Members", el("div", {}, invite, table(["Member", "Last active", "Role", ""], rows), el("div", { class: "note" }, "read-only views everything · member creates keys and pulls kill switches · admin manages budgets, policies, MCP and the org · owner manages billing and owners", teamOn("roles") ? null : [" · ", st("vi", "Team plan"), " unlocks member and read-only roles"])), { sub: `${m.data.length} member${m.data.length === 1 ? "" : "s"}` + (plan && plan.max_members ? ` of ${plan.max_members} seats` : "") }),
