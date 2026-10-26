@@ -1548,6 +1548,7 @@ PAGES.billing = async (root, actions) => {
     quota ? el("div", { style: { margin: "14px 0" } }, pb(p, pbClass(p))) : el("div", { style: { height: "14px" } }),
     el("div", { class: "g g3", style: { borderTop: "1px solid var(--ln)", paddingTop: "14px" } }, [["Seats", `${u.members}${eff.max_members ? " / " + eff.max_members : " / ∞"}`], ["Projects", `${u.projects}${eff.max_projects ? " / " + eff.max_projects : " / ∞"}`], ["Retention", eff.log_retention_days ? eff.log_retention_days + " days" : "—"]].map(([a, v]) => el("div", {}, el("div", { class: "kl" }, a), el("div", { style: { fontSize: "18px", marginTop: "6px" } }, v)))));
   const cta = (pl) => {
+    if (b.billing_enabled === false) return el("button", { class: "btn full", disabled: true }, pl.id === eff.id ? "Current plan" : "Billing not enabled");
     if (pl.id === eff.id) return b.has_subscription && b.can_manage ? el("button", { class: "btn p full", onclick: () => go("/billing/portal") }, "Manage in Stripe portal") : el("button", { class: "btn full", disabled: true }, "Current plan");
     if (pl.contact_sales) return b.sales_url ? el("a", { class: "btn full", href: b.sales_url, target: "_blank", rel: "noopener" }, "Contact sales") : el("button", { class: "btn full", disabled: true }, "Contact sales");
     if (!b.can_manage) return el("button", { class: "btn full", disabled: true, title: "Only owners can change the plan" }, "Owners only");
@@ -1557,7 +1558,7 @@ PAGES.billing = async (root, actions) => {
   };
   root.append(el("div", { class: "g" }, banners, usage, el("div", { class: "g g3" }, b.plans.map((pl) => planCard(pl, pl.id === eff.id, cta(pl)))),
     el("div", { class: "g g2" },
-      card("Invoices", empty("Invoices live in Stripe", "Open the billing portal to download invoices and receipts.", b.has_customer && b.can_manage ? el("button", { class: "btn", onclick: () => go("/billing/portal") }, "Open billing portal") : null)),
+      card("Invoices", empty("Invoices live in Stripe", "Open the billing portal to download invoices and receipts.", b.billing_enabled !== false && b.has_customer && b.can_manage ? el("button", { class: "btn", onclick: () => go("/billing/portal") }, "Open billing portal") : null)),
       card("Payment", el("div", {}, kvr([["Status", b.status || "—"], ["Subscription", b.has_subscription ? "active in Stripe" : "none"], ["Renews", b.current_period_end && !String(b.current_period_end).startsWith("0001") ? dateShort(b.current_period_end) : "—"],
         ["Card & billing email", b.has_customer ? "managed in Stripe portal" : "—"]]))))));
 };

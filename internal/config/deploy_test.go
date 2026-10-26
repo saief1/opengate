@@ -68,6 +68,8 @@ func TestFlyProdConfig(t *testing.T) {
 		"path = \"/livez\"",
 		"OPENGATE_ENV = \"production\"",
 		"OPENGATE_PUBLIC_URL = \"https://opengate.fly.dev\"",
+		"OPENGATE_DATABASE = \"/data/opengate-prod.db\"",
+		"OPENGATE_BILLING_DISABLED = \"1\"",
 		"dockerfile = \"../../Dockerfile.prod\"",
 		"local_path = \"deploy/cloud.yaml\"",
 	} {

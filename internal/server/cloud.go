@@ -185,11 +185,25 @@ func (s *Server) registerCloud(mux *http.ServeMux, h func(string, http.HandlerFu
 		return
 	}
 	h("GET /admin/api/billing", s.cloudBilling)
+	if s.cfg.Cloud.BillingDisabled {
+		h("POST /admin/api/billing/checkout", billingNotEnabled)
+		h("POST /admin/api/billing/portal", billingNotEnabled)
+		h("PUT /admin/api/billing/plan", billingNotEnabled)
+		h("POST /admin/api/billing/risk/clear", billingNotEnabled)
+		mux.HandleFunc("POST /cloud/stripe/webhook", billingNotEnabled)
+		return
+	}
 	h("POST /admin/api/billing/checkout", s.cloudCheckout)
 	h("POST /admin/api/billing/portal", s.cloudPortal)
 	h("PUT /admin/api/billing/plan", s.cloudSetPlan)
 	h("POST /admin/api/billing/risk/clear", s.cloudClearRisk)
 	mux.HandleFunc("POST /cloud/stripe/webhook", s.cloudWebhook)
+}
+
+// billingNotEnabled answers billing routes when cloud billing is disabled.
+func billingNotEnabled(w http.ResponseWriter, _ *http.Request) {
+	writeError(w, http.StatusServiceUnavailable, "invalid_request_error", "billing_not_enabled",
+		"Billing is not enabled on this deployment; all organizations use the free plan.")
 }
 
 func (s *Server) cloudBilling(w http.ResponseWriter, r *http.Request) {
@@ -216,7 +230,7 @@ func (s *Server) cloudBilling(w http.ResponseWriter, r *http.Request) {
 	}
 	plans := make([]planOut, 0, len(s.cfg.Cloud.Plans))
 	for _, p := range s.cfg.Cloud.Plans {
-		plans = append(plans, planOut{p, p.SelfServe()})
+		plans = append(plans, planOut{p, p.SelfServe() && !s.cfg.Cloud.BillingDisabled})
 	}
 	p := principalOf(r)
 	writeJSON(w, 200, map[string]any{
@@ -226,7 +240,8 @@ func (s *Server) cloudBilling(w http.ResponseWriter, r *http.Request) {
 		"risk_status": b.RiskStatus, "suspended": b.Suspended(),
 		"usage": map[string]any{"period": period, "requests": reqs, "projects": projects, "members": members, "pending_invites": pending},
 		"plans": plans, "sales_url": s.cfg.Cloud.SalesURL,
-		"can_manage": p.Kind == "token" || p.Role == store.RoleOwner,
+		"billing_enabled": !s.cfg.Cloud.BillingDisabled,
+		"can_manage":      p.Kind == "token" || p.Role == store.RoleOwner,
 	})
 }
 
