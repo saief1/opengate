@@ -18,7 +18,7 @@ var pageTmpl = template.Must(template.New("page").Parse(`<!doctype html>
 </head>
 <body>
 <header class="bar">
-  <a class="brand" href="/ui/landing.html">OpenGate</a>
+  <a class="brand" href="/">OpenGate</a>
   <nav>
     <a href="/pricing">Pricing</a>
     <a href="/login">Sign in</a>

@@ -309,8 +309,10 @@ func (s *Server) Handler() http.Handler {
 			w.Header().Set("Cache-Control", "public, max-age=86400")
 			http.ServeFileFS(w, r, s.webFS, "favicon.ico")
 		})
-		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, "/ui/", http.StatusFound)
+		// The public landing page lives at the site root; the dashboard stays at /ui/.
+		mux.HandleFunc("GET /{$}", s.serveLanding)
+		mux.HandleFunc("GET /ui/landing.html", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/", http.StatusMovedPermanently)
 		})
 	}
 	return s.recoverer(s.accessLog(s.commonHeaders(s.cors(mux))))
