@@ -14,7 +14,7 @@ touches DNS: these are the steps you run.
 | Secrets | `OPENGATE_MASTER_KEY`, `OPENGATE_ADMIN_TOKEN` (`opengate keygen`). Keep them in the platform's secret store, never in git. |
 | Database | SQLite volume (simplest) or managed PostgreSQL (replicas, managed backups). |
 | Stripe | Test-mode key (`sk_test_…`) only. Live keys are refused unless `OPENGATE_STRIPE_ALLOW_LIVE=true`. |
-| Email | Not built in: invites are copyable links. An email provider (Postmark, SES, Resend) is a future integration. |
+| Email | `RESEND_API_KEY` (preferred) or `SMTP_HOST`, plus `MAIL_FROM`. Unset logs the message and skips verification. See [docs/LAUNCH.md](docs/LAUNCH.md). |
 
 All configuration is documented in [`.env.example`](.env.example) and
 [docs/configuration.md](docs/configuration.md).
@@ -67,9 +67,15 @@ fly deploy --config deploy/fly.toml
 
 The public test site uses `deploy/fly-demo/` instead (mock providers, seeded by
 `scripts/fly-demo-seed.sh`). It sets `OPENGATE_DEMO_MOCK_LISTEN` (demo mode: `/public/live`,
-`/public/playground`, dashboard *Try it*) and `OPENGATE_DEMO_TRAFFIC=1` (in-process traffic generator, one
-request every 3-7s while the machine is running; demo rows kept 30 days, capped at 60k per table). Never set
-these on a real deployment.
+dashboard *Try it*), `OPENGATE_DEMO_TRAFFIC=1` (in-process traffic generator, one
+request every 3-7s while the machine is running; demo rows kept 30 days, capped at 60k per table), and
+`OPENGATE_PUBLIC_PLAYGROUND=1` (mock-only). Never set these on a real deployment.
+`OPENGATE_ENV=production` refuses them.
+
+Production is a separate config, `deploy/fly-prod/fly.toml` (app `opengate-prod`,
+`min_machines_running = 1`, health checks, no demo flags, no demo volume).
+Backups, email, Stripe live keys, and the uptime probe are in
+[docs/LAUNCH.md](docs/LAUNCH.md). That file does not deploy or change DNS.
 
 Keep one machine with SQLite (volumes are per machine). For more than one,
 attach Fly Postgres / a managed Postgres and set `OPENGATE_DATABASE`.

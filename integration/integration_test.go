@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/saief1/opengate/internal/config"
+	"github.com/saief1/opengate/internal/mailer"
 	"github.com/saief1/opengate/internal/mockprovider"
 	"github.com/saief1/opengate/internal/pricing"
 	"github.com/saief1/opengate/internal/secure"
@@ -38,6 +39,7 @@ type env struct {
 	srv      *server.Server
 	mu       sync.Mutex
 	webhooks []map[string]any
+	mail     mailer.Sender
 }
 
 func setup(t *testing.T) *env { return setupWith(t, nil) }
@@ -105,8 +107,12 @@ func setupWith(t *testing.T, mutate func(*config.Config)) *env {
 func (e *env) newGateway() (*server.Server, http.Handler) {
 	e.t.Helper()
 	prices, _ := pricing.NewRegistry("")
+	mail := e.mail
+	if mail == nil {
+		mail = &mailer.Log{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	}
 	srv, err := server.New(context.Background(), server.Options{Config: e.cfg, Store: e.st, Cipher: e.cipher, Pricing: prices,
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), WebFS: web.FS()})
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), WebFS: web.FS(), Mailer: mail})
 	if err != nil {
 		e.t.Fatal(err)
 	}

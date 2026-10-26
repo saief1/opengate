@@ -68,7 +68,7 @@ auth:
   session_ttl: 12h              # idle timeout
   session_max_age: 168h         # absolute lifetime
   invite_ttl: 168h
-  allow_signup: false           # true = anyone may create an account + org (hosted mode)
+  allow_signup: false           # true = public /signup creates an account + org (owner). Cloud mode forces this on. A configured mailer requires email verification before login.
   secure_cookies: false         # force Secure (automatic over TLS / trusted X-Forwarded-Proto)
 
 # Smart routing. Rules (by prompt length, tags, headers, agent, cost

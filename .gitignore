@@ -3,5 +3,7 @@
 *.db
 *.db-shm
 *.db-wal
+# scripts/demo.sh writes this at the repo root. It is a local demo database, never a production file.
+/demo.db
 /opengate
 .env

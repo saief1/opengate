@@ -14,7 +14,7 @@ Send `SIGHUP` to reload the price table.
 | `OPENGATE_DATABASE` | SQLite path or `postgres://…` DSN. |
 | `OPENGATE_PRICING_FILE` | Custom price table (YAML). Empty means the built-in, source-cited table (`opengate pricing`). |
 | `OPENGATE_METRICS_TOKEN` | Bearer token for `/metrics` (the admin token is not accepted). |
-| `OPENGATE_ALERT_WEBHOOK_URL` | Slack-compatible webhook for budget and kill-switch alerts. |
+| `OPENGATE_ALERT_WEBHOOK_URL` | Slack-compatible webhook for budget, kill-switch, and HTTP 5xx alerts (`kind=http_error`, one per path and status per minute). |
 | `OPENGATE_LOG_LEVEL` / `OPENGATE_LOG_FORMAT` | `debug\|info\|warn\|error` / `json\|text`. |
 | `OPENGATE_RATE_LIMIT_BACKEND` | `database` (persisted, shared) or `memory`. |
 | `OPENGATE_PROVIDER_<NAME>_BASE_URL` | Override a provider's base URL. |
@@ -27,6 +27,15 @@ Send `SIGHUP` to reload the price table.
 | `OPENGATE_CORS_ORIGINS` | Comma-separated origins allowed to call `/v1` and `/mcp` from browsers (`*` = any). Empty = no CORS. |
 | `OPENGATE_STRIPE_ALLOW_LIVE` | `true` to accept live-mode Stripe keys (refused by default). |
 | `OPENGATE_NEW_PASSWORD` | Read by `opengate create-user` instead of stdin. |
+| `OPENGATE_ENV` / `OPENGATE_PRODUCTION` | `production` (or `prod`) / `true` refuses demo flags and a database path that contains `demo.db`, and requires Postgres or `LITESTREAM_BUCKET`. |
+| `OPENGATE_PUBLIC_PLAYGROUND` | `1` registers `POST /public/playground`. Requires `OPENGATE_DEMO_MOCK_LISTEN`. Refused when `OPENGATE_ENV=production`. Off by default. |
+| `RESEND_API_KEY` | Transactional email via Resend. Preferred over SMTP. |
+| `MAIL_FROM` | From address for verification and password reset. `RESEND_FROM` and `SMTP_FROM` are aliases. Required when a provider is set. |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` | SMTP fallback (port default `587`) when `RESEND_API_KEY` is unset. Neither provider means messages are logged and signup does not wait for verification. |
+| `LITESTREAM_BUCKET` | S3 bucket for off-site SQLite backups in the production image. See [LAUNCH.md](LAUNCH.md). |
+| `LITESTREAM_ACCESS_KEY_ID`, `LITESTREAM_SECRET_ACCESS_KEY` | S3 credentials. Mapped to the AWS variables when those are unset. |
+| `LITESTREAM_ENDPOINT`, `LITESTREAM_REGION`, `LITESTREAM_FORCE_PATH_STYLE` | Optional S3-compatible endpoint settings. |
+| `OPENGATE_SQLITE_NO_REPLICA` | `1` lets production SQLite start without a bucket. Not a backup. |
 
 ## Top level
 

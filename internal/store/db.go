@@ -493,6 +493,22 @@ var migrations = []migration{
   PRIMARY KEY (org_id, scope, scope_id)
 )`,
 	}},
+	{10, "email verification and password reset tokens", []string{
+		`ALTER TABLE users ADD COLUMN email_verified_at BIGINT NOT NULL DEFAULT 0`,
+		// Accounts that already exist proved their address out of band
+		// (operator create-user, invite, or a previous install).
+		`UPDATE users SET email_verified_at = CASE WHEN created_at > 0 THEN created_at ELSE 1 END WHERE email_verified_at = 0`,
+		`CREATE TABLE IF NOT EXISTS email_tokens (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at BIGINT NOT NULL,
+  used_at BIGINT NOT NULL DEFAULT 0,
+  created_at BIGINT NOT NULL
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_email_tokens_user ON email_tokens(user_id, purpose)`,
+	}},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

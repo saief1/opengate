@@ -23,6 +23,7 @@ import (
 	"github.com/saief1/opengate/internal/billing"
 	"github.com/saief1/opengate/internal/budget"
 	"github.com/saief1/opengate/internal/config"
+	"github.com/saief1/opengate/internal/mailer"
 	"github.com/saief1/opengate/internal/pricing"
 	"github.com/saief1/opengate/internal/provider"
 	"github.com/saief1/opengate/internal/secure"
@@ -52,9 +53,13 @@ type Options struct {
 	Sleep   func(ctx context.Context, d time.Duration) error // for tests
 	// StripeClient overrides the HTTP client used for Stripe (tests).
 	StripeClient *http.Client
-	// Demo enables the public test-site features (/public/*, dashboard
+	// Demo enables the public test-site features (/public/live, dashboard
 	// "Try it"); DemoTraffic additionally runs the traffic generator.
-	Demo, DemoTraffic bool
+	// Playground exposes POST /public/playground. It is refused unless Demo
+	// is also set, and the handler only runs when every provider is loopback.
+	Demo, DemoTraffic, Playground bool
+	// Mailer sends verification and password-reset messages. Nil uses FromEnv.
+	Mailer mailer.Sender
 }
 
 // Server is the OpenGate HTTP application.
@@ -94,6 +99,14 @@ type Server struct {
 	hub     *liveHub
 	projOrg sync.Map   // project id -> org id (live stream routing)
 	demo    *demoState // nil unless Options.Demo
+	// playground is POST /public/playground. Off unless Demo and Playground.
+	playground   bool
+	mail         mailer.Sender
+	signupLimit  *ipLimiter
+	signupAll    *ipLimiter
+	resetLimit   *ipLimiter
+	resetAcct    *ipLimiter
+	httpErrAlert *ipLimiter
 }
 
 // New builds a Server.
@@ -134,9 +147,23 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	s.mcpRates = rates
 	s.hub = newLiveHub()
 	o.Alerter.Listen(s.onAlert)
+	if o.Playground && !o.Demo {
+		return nil, errors.New("public playground requires demo mode (in-process mock provider)")
+	}
 	if o.Demo {
 		s.demo = newDemoState(o.DemoTraffic)
 	}
+	s.playground = o.Playground && o.Demo
+	if o.Mailer != nil {
+		s.mail = o.Mailer
+	} else {
+		s.mail = mailer.FromEnv(o.Logger)
+	}
+	s.signupLimit = newIPLimiter(signupPerIP, signupPerIPEvery)
+	s.signupAll = newIPLimiter(30, time.Hour)
+	s.resetLimit = newIPLimiter(5, time.Hour)
+	s.resetAcct = newIPLimiter(3, time.Hour)
+	s.httpErrAlert = newIPLimiter(1, time.Minute)
 	s.mcpClient = &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone(),
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	s.sprayCount = map[string]int{}
@@ -207,6 +234,9 @@ func (s *Server) Run(ctx context.Context) {
 			if s.cloud != nil {
 				s.pruneCloud(ctx)
 			}
+			if err := s.store.PruneEmailTokens(ctx, time.Now().Add(-7*24*time.Hour)); err != nil {
+				s.log.Warn("prune email tokens", "err", err)
+			}
 		case <-t.C:
 			if err := s.store.PruneRateBuckets(ctx, time.Now().Add(-10*time.Minute)); err != nil {
 				s.log.Warn("prune rate buckets", "err", err)
@@ -264,8 +294,12 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.demo != nil {
 		mux.HandleFunc("GET /public/live", s.publicLive)
-		mux.HandleFunc("POST /public/playground", s.publicPlayground)
+		// Off unless OPENGATE_PUBLIC_PLAYGROUND (or Options.Playground) is set.
+		if s.playground {
+			mux.HandleFunc("POST /public/playground", s.publicPlayground)
+		}
 	}
+	s.registerPublic(mux)
 	s.registerAdmin(mux)
 	if s.webFS != nil && !s.cfg.DisableDashboard {
 		files := http.FileServerFS(s.webFS)
@@ -285,6 +319,9 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) commonHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		// Every response, including HTML outside /ui/ (signup, legal pages).
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		w.Header().Set("X-Frame-Options", "DENY")
 		// HSTS whenever the client connection is HTTPS, including TLS terminated by a
 		// trusted proxy (Fly, a load balancer); r.TLS alone is nil behind those.
 		if s.requestIsHTTPS(r) {
@@ -338,6 +375,13 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w}
 		next.ServeHTTP(rec, r)
+		status := rec.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		if r.Context().Value(demoCtxKey{}) == nil {
+			s.noteHTTP(r, status)
+		}
 		p := r.URL.Path
 		if r.Context().Value(demoCtxKey{}) != nil {
 			return
@@ -345,7 +389,7 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 		if strings.HasPrefix(p, "/ui/") || p == "/healthz" || p == "/livez" || p == "/readyz" || p == "/metrics" {
 			return
 		}
-		s.log.Info("http", "method", r.Method, "path", p, "status", rec.status, "dur_ms", time.Since(start).Milliseconds(),
+		s.log.Info("http", "method", r.Method, "path", p, "status", status, "dur_ms", time.Since(start).Milliseconds(),
 			"request_id", rec.Header().Get("X-OpenGate-Request-Id"), "remote_ip", s.clientIP(r))
 	})
 }
@@ -358,6 +402,7 @@ func (s *Server) recoverer(next http.Handler) http.Handler {
 					panic(v)
 				}
 				s.log.Error("panic", "err", v, "path", r.URL.Path, "stack", string(debug.Stack()))
+				s.noteHTTP(r, http.StatusInternalServerError)
 				writeError(w, http.StatusInternalServerError, "server_error", "internal_error", "internal server error")
 			}
 		}()

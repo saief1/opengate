@@ -23,6 +23,12 @@ type Event struct {
 	SpentUSD  float64   `json:"spent_usd,omitempty"`
 	LimitUSD  float64   `json:"limit_usd,omitempty"`
 	Time      time.Time `json:"time"`
+	// HTTP error alerts (kind http_error). Slack uses Text; these fields
+	// are for the machine consumer of the same webhook.
+	Status    int    `json:"status,omitempty"`
+	Path      string `json:"path,omitempty"`
+	Method    string `json:"method,omitempty"`
+	RequestID string `json:"request_id,omitempty"`
 }
 
 // sendHook lets tests observe events.

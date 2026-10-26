@@ -5,6 +5,14 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] (features-v3)
 
+### Production readiness
+- Public customer `/signup`, `/login`, and `/logout` (organization + owner), separate from the admin token, with signup and reset rate limits.
+- Pluggable mailer: Resend (`RESEND_API_KEY`), SMTP fallback, log-only when unset. Email verification and single-use password reset when a provider is configured.
+- Draft `/terms`, `/privacy`, and `/pricing` (OpenGate, Quebec, Canada), linked from the footer and signup.
+- `deploy/fly-prod` (always-on, health checks, no demo flags) and `Dockerfile.prod` with Litestream restore/replicate. See `docs/LAUNCH.md`.
+- HTTP 5xx alerts on the existing webhook (`kind=http_error`) and `opengate_http_errors_total`. CSP and `X-Frame-Options: DENY` on every response.
+- `POST /public/playground` is off unless `OPENGATE_PUBLIC_PLAYGROUND` is set with the demo mock, and it refuses non-loopback providers. `OPENGATE_ENV=production` refuses demo flags.
+
 ### Control and measured performance (design-josh)
 - **Kill switch page** (sidebar *Kill switch*): a global org-wide kill (`403 org_killed`), per-key, per-agent
   (`agent_killed`, covers keys created later) and per-customer (`customer_killed`) kills, and a history drawn from

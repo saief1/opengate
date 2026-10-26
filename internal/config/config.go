@@ -88,6 +88,9 @@ type Config struct {
 	// Stripe keys. Off by default so a misplaced sk_live_ key can't charge
 	// real cards from a test deployment.
 	StripeAllowLive bool `yaml:"-"`
+	// Production (OPENGATE_ENV=production or OPENGATE_PRODUCTION=true) refuses
+	// demo flags and requires a real database backup path.
+	Production bool `yaml:"-"`
 }
 
 // MCPConfig configures the MCP (Model Context Protocol) tool gateway.
@@ -456,6 +459,12 @@ func (c *Config) applyEnv() {
 	set(&c.Plan, "OPENGATE_PLAN")
 	if v := os.Getenv("OPENGATE_STRIPE_ALLOW_LIVE"); v == "1" || strings.EqualFold(v, "true") {
 		c.StripeAllowLive = true
+	}
+	if v := os.Getenv("OPENGATE_ENV"); strings.EqualFold(v, "production") || strings.EqualFold(v, "prod") {
+		c.Production = true
+	}
+	if v := os.Getenv("OPENGATE_PRODUCTION"); v == "1" || strings.EqualFold(v, "true") {
+		c.Production = true
 	}
 	if v := os.Getenv("OPENGATE_CORS_ORIGINS"); v != "" {
 		c.CORSOrigins = nil
@@ -831,4 +840,67 @@ func (c *Config) checkURL(raw string) error {
 		return fmt.Errorf("%q uses plain http to a non-loopback host; use https or set allow_insecure_upstream: true", raw)
 	}
 	return fmt.Errorf("%q: unsupported scheme %q", raw, u.Scheme)
+}
+
+// TruthyEnv reports common on-values (1, true, yes, on).
+func TruthyEnv(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// RefuseDemoFlags fails closed in production when demo-only switches are set.
+// OPENGATE_DEMO_MOCK_LISTEN, OPENGATE_DEMO_TRAFFIC, and OPENGATE_PUBLIC_PLAYGROUND
+// must not activate on a production config.
+func (c *Config) RefuseDemoFlags() error {
+	if c == nil || !c.Production {
+		return nil
+	}
+	var bad []string
+	if os.Getenv("OPENGATE_DEMO_MOCK_LISTEN") != "" {
+		bad = append(bad, "OPENGATE_DEMO_MOCK_LISTEN")
+	}
+	if TruthyEnv(os.Getenv("OPENGATE_DEMO_TRAFFIC")) {
+		bad = append(bad, "OPENGATE_DEMO_TRAFFIC")
+	}
+	if TruthyEnv(os.Getenv("OPENGATE_PUBLIC_PLAYGROUND")) {
+		bad = append(bad, "OPENGATE_PUBLIC_PLAYGROUND")
+	}
+	if len(bad) > 0 {
+		return fmt.Errorf("production mode refuses demo flags: %s", strings.Join(bad, ", "))
+	}
+	return nil
+}
+
+// CheckPlaygroundFlag requires the in-process mock whenever the public
+// playground is explicitly enabled. The route stays unregistered otherwise.
+func CheckPlaygroundFlag() error {
+	if !TruthyEnv(os.Getenv("OPENGATE_PUBLIC_PLAYGROUND")) {
+		return nil
+	}
+	if os.Getenv("OPENGATE_DEMO_MOCK_LISTEN") == "" {
+		return errors.New("OPENGATE_PUBLIC_PLAYGROUND requires OPENGATE_DEMO_MOCK_LISTEN; the playground is mock-only")
+	}
+	return nil
+}
+
+// ValidateProductionStorage requires Postgres, or SQLite with an off-site
+// Litestream bucket, before a production process serves traffic.
+func (c *Config) ValidateProductionStorage() error {
+	if c == nil || !c.Production {
+		return nil
+	}
+	dsn := strings.ToLower(strings.TrimSpace(c.Database))
+	if strings.Contains(dsn, "demo.db") {
+		return errors.New("production database must be a fresh database, not a demo.db file")
+	}
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		return nil
+	}
+	if os.Getenv("LITESTREAM_BUCKET") != "" || os.Getenv("OPENGATE_SQLITE_NO_REPLICA") == "1" {
+		return nil
+	}
+	return errors.New("production requires Postgres (OPENGATE_DATABASE=postgres://...) or SQLite with LITESTREAM_BUCKET for off-site backups (OPENGATE_SQLITE_NO_REPLICA=1 acknowledges the risk)")
 }
