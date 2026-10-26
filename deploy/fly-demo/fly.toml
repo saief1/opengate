@@ -18,6 +18,8 @@ primary_region = "yyz"
   OPENGATE_DEMO_MOCK_LISTEN = "127.0.0.1:9090"
   # In-process demo traffic generator (demo mode only): live dashboard and landing page.
   OPENGATE_DEMO_TRAFFIC = "1"
+  # Public playground is opt-in even in demo mode, and mock-only.
+  OPENGATE_PUBLIC_PLAYGROUND = "1"
   OPENGATE_PUBLIC_URL = "https://opengate.fly.dev"
 
 [mounts]

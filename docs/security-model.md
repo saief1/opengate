@@ -84,8 +84,9 @@ and `golang.org/x/crypto`. The dashboard is vanilla JS with no npm packages, emb
   `allow_insecure_upstream`.
 * Size limits: 10 MiB requests, 1 MiB admin JSON, 64 MiB upstream responses, 16 MiB SSE lines. Header, read and idle
   timeouts are set. `max_inflight` optionally caps concurrency.
-* Dashboard: strict CSP (`script-src 'self'`, no inline code, `frame-ancestors 'none'`), `X-Frame-Options: DENY`,
-  `nosniff`, `Referrer-Policy: no-referrer`, HSTS over TLS. All DOM is built with `textContent`.
+* Every response: strict CSP (`default-src 'self'`, `script-src 'self'`, no inline code, `frame-ancestors 'none'`),
+  `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`, HSTS over TLS. Public pages (`/signup`, legal)
+  load `/public.css` only. Dashboard DOM is built with `textContent`.
 * `/metrics` needs its own `OPENGATE_METRICS_TOKEN`. Internal errors return generic messages with a request ID, and the
   detail goes to the server log.
 

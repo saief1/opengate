@@ -1,10 +1,10 @@
 module github.com/saief1/opengate
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/jackc/pgx/v5 v5.11.0
-	golang.org/x/crypto v0.58.0
+	golang.org/x/crypto v0.58.1-0.20261020153306-9f2b28d4331a
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.60.1
 )

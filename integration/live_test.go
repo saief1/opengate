@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/saief1/opengate/internal/config"
+	"github.com/saief1/opengate/internal/mailer"
 	"github.com/saief1/opengate/internal/pricing"
 	"github.com/saief1/opengate/internal/server"
 	"github.com/saief1/opengate/web"
@@ -35,7 +36,8 @@ func setupDemo(t *testing.T) (*env, *httptest.Server, map[string]string) {
 	e.admin("PUT", "/admin/api/projects/"+projects["support-bot"]+"/guardrails", map[string]any{"pii": "redact", "injection": "block"}, 200)
 	prices, _ := pricing.NewRegistry("")
 	srv, err := server.New(context.Background(), server.Options{Config: e.cfg, Store: e.st, Cipher: e.cipher, Pricing: prices,
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), WebFS: web.FS(), Demo: true})
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), WebFS: web.FS(), Demo: true, Playground: true,
+		Mailer: &mailer.Log{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}})
 	if err != nil {
 		t.Fatal(err)
 	}

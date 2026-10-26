@@ -133,6 +133,15 @@ func serve(args []string) error {
 	if err := cfg.ValidateSecrets(); err != nil {
 		return fmt.Errorf("%w\n\nRun `opengate keygen` to generate secure values", err)
 	}
+	if err := cfg.RefuseDemoFlags(); err != nil {
+		return err
+	}
+	if err := config.CheckPlaygroundFlag(); err != nil {
+		return err
+	}
+	if err := cfg.ValidateProductionStorage(); err != nil {
+		return err
+	}
 	mk, err := secure.ParseMasterKey(cfg.MasterKey)
 	if err != nil {
 		return err
@@ -154,8 +163,10 @@ func serve(args []string) error {
 	defer stop()
 	demo := os.Getenv("OPENGATE_DEMO_MOCK_LISTEN") != ""
 	traffic := demo && truthy(os.Getenv("OPENGATE_DEMO_TRAFFIC"))
+	// Playground stays off unless the operator opts in, and only alongside the mock.
+	playground := demo && config.TruthyEnv(os.Getenv("OPENGATE_PUBLIC_PLAYGROUND"))
 	srv, err := server.New(ctx, server.Options{Config: cfg, Store: st, Cipher: cipher, Pricing: prices, Logger: log, WebFS: web.FS(),
-		Demo: demo, DemoTraffic: traffic})
+		Demo: demo, DemoTraffic: traffic, Playground: playground})
 	if err != nil {
 		return err
 	}

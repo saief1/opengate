@@ -120,13 +120,15 @@ func (s *Store) ListOrgs(ctx context.Context, userID string) ([]*Org, error) {
 
 // User is a dashboard account.
 type User struct {
-	ID           string    `json:"id"`
-	Email        string    `json:"email"`
-	Name         string    `json:"name"`
-	PasswordHash string    `json:"-"`
-	Disabled     bool      `json:"disabled"`
-	CreatedAt    time.Time `json:"created_at"`
-	LastLoginAt  time.Time `json:"last_login_at"`
+	ID              string    `json:"id"`
+	Email           string    `json:"email"`
+	Name            string    `json:"name"`
+	PasswordHash    string    `json:"-"`
+	Disabled        bool      `json:"disabled"`
+	EmailVerified   bool      `json:"email_verified"`
+	EmailVerifiedAt time.Time `json:"-"`
+	CreatedAt       time.Time `json:"created_at"`
+	LastLoginAt     time.Time `json:"last_login_at"`
 }
 
 // NormalizeEmail validates and lower-cases an address.
@@ -145,21 +147,21 @@ func (s *Store) CreateUser(ctx context.Context, email, name, passwordHash string
 	if err != nil {
 		return nil, err
 	}
-	u := &User{ID: secure.RandomID("usr_"), Email: email, Name: strings.TrimSpace(name), PasswordHash: passwordHash, CreatedAt: time.Now().UTC()}
-	_, err = s.exec(ctx, `INSERT INTO users(id,email,name,password_hash,created_at) VALUES(?,?,?,?,?)`, u.ID, u.Email, u.Name, u.PasswordHash, ms(u.CreatedAt))
+	u := &User{ID: secure.RandomID("usr_"), Email: email, Name: strings.TrimSpace(name), PasswordHash: passwordHash, CreatedAt: time.Now().UTC(), EmailVerified: true, EmailVerifiedAt: time.Now().UTC()}
+	_, err = s.exec(ctx, `INSERT INTO users(id,email,name,password_hash,created_at,email_verified_at) VALUES(?,?,?,?,?,?)`, u.ID, u.Email, u.Name, u.PasswordHash, ms(u.CreatedAt), ms(u.EmailVerifiedAt))
 	if isUnique(err) {
 		return nil, ErrConflict
 	}
 	return u, err
 }
 
-const userCols = `id,email,name,password_hash,disabled,created_at,last_login_at`
+const userCols = `id,email,name,password_hash,disabled,created_at,last_login_at,email_verified_at`
 
 func scanUser(sc interface{ Scan(...any) error }) (*User, error) {
 	var u User
 	var d int
-	var c, l int64
-	if err := sc.Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &d, &c, &l); err != nil {
+	var c, l, ev int64
+	if err := sc.Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &d, &c, &l, &ev); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -169,7 +171,20 @@ func scanUser(sc interface{ Scan(...any) error }) (*User, error) {
 	if l > 0 {
 		u.LastLoginAt = fromMS(l)
 	}
+	if ev > 0 {
+		u.EmailVerified = true
+		u.EmailVerifiedAt = fromMS(ev)
+	}
 	return &u, nil
+}
+
+// SetEmailVerified marks a user verified (at non-zero) or unverified (zero).
+func (s *Store) SetEmailVerified(ctx context.Context, id string, at time.Time) error {
+	v := int64(0)
+	if !at.IsZero() {
+		v = ms(at)
+	}
+	return s.execOne(ctx, `UPDATE users SET email_verified_at=? WHERE id=?`, v, id)
 }
 
 // UserByEmail fetches a user by (normalized) email.
@@ -234,7 +249,7 @@ func (s *Store) MemberRole(ctx context.Context, orgID, userID string) (string, e
 
 // ListMembers lists an org's members.
 func (s *Store) ListMembers(ctx context.Context, orgID string) ([]*Member, error) {
-	rows, err := s.query(ctx, `SELECT u.id,u.email,u.name,u.password_hash,u.disabled,u.created_at,u.last_login_at,m.role,m.created_at
+	rows, err := s.query(ctx, `SELECT u.id,u.email,u.name,u.password_hash,u.disabled,u.created_at,u.last_login_at,u.email_verified_at,m.role,m.created_at
 FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.org_id=? ORDER BY m.created_at`, orgID)
 	if err != nil {
 		return nil, err
@@ -244,13 +259,17 @@ FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.org_id=? ORDER BY m.cr
 	for rows.Next() {
 		var m Member
 		var d int
-		var c, l, j int64
-		if err := rows.Scan(&m.ID, &m.Email, &m.Name, &m.PasswordHash, &d, &c, &l, &m.Role, &j); err != nil {
+		var c, l, ev, j int64
+		if err := rows.Scan(&m.ID, &m.Email, &m.Name, &m.PasswordHash, &d, &c, &l, &ev, &m.Role, &j); err != nil {
 			return nil, err
 		}
 		m.Disabled, m.CreatedAt, m.JoinedAt = d == 1, fromMS(c), fromMS(j)
 		if l > 0 {
 			m.LastLoginAt = fromMS(l)
+		}
+		if ev > 0 {
+			m.EmailVerified = true
+			m.EmailVerifiedAt = fromMS(ev)
 		}
 		out = append(out, &m)
 	}
@@ -539,6 +558,70 @@ func likeEscape(v string) string {
 }
 
 // ---------- org scoping helpers ----------
+
+// Email token purposes.
+const (
+	EmailTokenVerify = "verify"
+	EmailTokenReset  = "reset"
+)
+
+// IssueEmailToken stores a single-use token and invalidates older unused
+// tokens of the same purpose. The plaintext is returned once.
+func (s *Store) IssueEmailToken(ctx context.Context, userID, purpose string, ttl time.Duration) (string, error) {
+	if purpose != EmailTokenVerify && purpose != EmailTokenReset {
+		return "", fmt.Errorf("invalid email token purpose %q", purpose)
+	}
+	if ttl <= 0 {
+		return "", fmt.Errorf("email token ttl must be positive")
+	}
+	now := time.Now().UTC()
+	if _, err := s.exec(ctx, `UPDATE email_tokens SET used_at=? WHERE user_id=? AND purpose=? AND used_at=0`, ms(now), userID, purpose); err != nil {
+		return "", err
+	}
+	plain := secure.RandomToken(32)
+	_, err := s.exec(ctx, `INSERT INTO email_tokens(id,user_id,purpose,token_hash,expires_at,used_at,created_at) VALUES(?,?,?,?,?,0,?)`,
+		secure.RandomID("etok_"), userID, purpose, secure.HashKey(plain), ms(now.Add(ttl)), ms(now))
+	if err != nil {
+		return "", err
+	}
+	return plain, nil
+}
+
+// ConsumeEmailToken marks a matching unused, unexpired token used and
+// returns the user id. A second call with the same plaintext fails.
+func (s *Store) ConsumeEmailToken(ctx context.Context, purpose, plain string, now time.Time) (string, error) {
+	if plain == "" {
+		return "", ErrNotFound
+	}
+	hash := secure.HashKey(plain)
+	now = now.UTC()
+	res, err := s.exec(ctx, `UPDATE email_tokens SET used_at=? WHERE token_hash=? AND purpose=? AND used_at=0 AND expires_at>=?`,
+		ms(now), hash, purpose, ms(now))
+	if err != nil {
+		return "", err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return "", err
+	}
+	if n != 1 {
+		return "", ErrNotFound
+	}
+	var userID string
+	if err := s.queryRow(ctx, `SELECT user_id FROM email_tokens WHERE token_hash=? AND purpose=?`, hash, purpose).Scan(&userID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrNotFound
+		}
+		return "", err
+	}
+	return userID, nil
+}
+
+// PruneEmailTokens deletes tokens that expired or were used before the cutoff.
+func (s *Store) PruneEmailTokens(ctx context.Context, before time.Time) error {
+	_, err := s.exec(ctx, `DELETE FROM email_tokens WHERE expires_at < ? OR (used_at > 0 AND used_at < ?)`, ms(before), ms(before))
+	return err
+}
 
 // KeyOrg returns the org a virtual key belongs to.
 func (s *Store) KeyOrg(ctx context.Context, keyID string) (string, error) {

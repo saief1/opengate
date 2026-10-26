@@ -1,0 +1,13 @@
+# Litestream 0.5 config for the production image. Environment variables are
+# expanded by default. deploy/fly-prod/entrypoint.sh sets LITESTREAM_REPLICA_URL
+# from LITESTREAM_BUCKET (s3://bucket/opengate, plus optional endpoint, region,
+# and force-path-style). Credentials stay in AWS_ACCESS_KEY_ID and
+# AWS_SECRET_ACCESS_KEY, which the entrypoint fills from LITESTREAM_ACCESS_KEY_ID
+# and LITESTREAM_SECRET_ACCESS_KEY when the AWS variables are unset.
+#
+# Postgres deployments do not use this file. The entrypoint execs OpenGate
+# directly when OPENGATE_DATABASE is a postgres:// or postgresql:// URL.
+dbs:
+  - path: ${OPENGATE_DATABASE}
+    replica:
+      url: ${LITESTREAM_REPLICA_URL}

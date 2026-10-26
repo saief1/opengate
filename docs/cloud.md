@@ -6,7 +6,7 @@ there is no separate service.
 
 | | |
 |---|---|
-| **Sign-up** | Self-serve email + password, creating a user and an org (owner). Per-IP throttle. Landing links: `/ui/#signup` or `/ui/#signup?plan=team` (goes straight on to Checkout). |
+| **Sign-up** | Public `/signup`, `/login`, and `/logout` (separate from the operator admin token). Creates a user and an org they own. Rate limited. When Resend or SMTP is configured, the account stays signed out until the single-use verification link is consumed; password reset is `/forgot-password`. See [LAUNCH.md](LAUNCH.md). |
 | **Plans** | Configurable catalog (`cloud.plans`). Limits: requests per month, seats, projects, log retention. Draft defaults: Free, Team ($49/mo), Enterprise (contact sales). |
 | **Payments** | Stripe Checkout (subscription mode), the Stripe Customer Portal (card, invoices, cancel, plan change), and signed webhooks. |
 | **Enforcement** | Gateway requests over quota get `429 insufficient_quota / plan_quota_exceeded` (OpenAI-SDK compatible). Seats and projects over the limit get `402 plan_limit_reached`. Logs older than the plan's retention are deleted hourly. |

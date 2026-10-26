@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/saief1/opengate/internal/budget"
 	"github.com/saief1/opengate/internal/metrics"
 	"github.com/saief1/opengate/internal/secure"
 	"github.com/saief1/opengate/internal/store"
@@ -24,6 +25,7 @@ type gatewayMetrics struct {
 	rejected   *metrics.Counter
 	inflight   *metrics.Gauge
 	adminFails *metrics.Counter
+	httpErrors *metrics.Counter
 	guard      *metrics.Counter
 	cacheHits  *metrics.Counter
 	saved      *metrics.Counter
@@ -41,6 +43,7 @@ func newGatewayMetrics() *gatewayMetrics {
 		rejected:   r.NewCounter("opengate_rejections_total", "Requests rejected by OpenGate by error code.", "code"),
 		inflight:   r.NewGauge("opengate_inflight_requests", "Requests currently being proxied."),
 		adminFails: r.NewCounter("opengate_admin_auth_failures_total", "Failed admin authentications."),
+		httpErrors: r.NewCounter("opengate_http_errors_total", "HTTP responses with status >= 400, by class (4xx|5xx) and a coarse path.", "class", "path"),
 		guard:      r.NewCounter("opengate_guardrail_findings_total", "Guardrail findings by detector and action.", "detector", "action"),
 		cacheHits:  r.NewCounter("opengate_cache_hits_total", "Responses served from the OpenGate response cache."),
 		saved:      r.NewCounter("opengate_saved_usd_total", "Estimated USD saved vs. the requested/baseline model, by reason (routing|cache).", "reason"),
@@ -78,6 +81,49 @@ func (s *Server) observe(l *store.RequestLog) {
 		for _, c := range strings.Split(l.Guard, ",") {
 			m.guard.Inc(c, l.GuardAction)
 		}
+	}
+}
+
+// noteHTTP records client and server errors and, for 5xx, sends one
+// structured alert per path per minute through the configured webhook.
+func (s *Server) noteHTTP(r *http.Request, status int) {
+	if s.metrics == nil || status < 400 {
+		return
+	}
+	class := "4xx"
+	if status >= 500 {
+		class = "5xx"
+	}
+	s.metrics.httpErrors.Inc(class, metricPath(r.URL.Path))
+	if status < 500 || s.alerter == nil || s.httpErrAlert == nil {
+		return
+	}
+	if ok, _ := s.httpErrAlert.allow(r.URL.Path + "|" + itoa(status)); !ok {
+		return
+	}
+	s.alerter.Send(budget.Event{
+		Kind: "http_error", Method: r.Method, Path: r.URL.Path, Status: status,
+		RequestID: r.Header.Get("X-OpenGate-Request-Id"),
+		Text:      "OpenGate HTTP " + itoa(status) + " " + r.Method + " " + r.URL.Path,
+	})
+}
+
+func metricPath(p string) string {
+	switch {
+	case strings.HasPrefix(p, "/v1/"):
+		return "/v1"
+	case strings.HasPrefix(p, "/admin/"):
+		return "/admin"
+	case strings.HasPrefix(p, "/cloud/"):
+		return "/cloud"
+	case strings.HasPrefix(p, "/public/"):
+		return "/public"
+	case strings.HasPrefix(p, "/mcp/"):
+		return "/mcp"
+	case p == "/signup" || p == "/login" || p == "/logout" || p == "/forgot-password" || p == "/reset-password" || strings.HasPrefix(p, "/verify-email"):
+		return "/account"
+	default:
+		return "other"
 	}
 }
 

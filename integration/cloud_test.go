@@ -246,6 +246,11 @@ func TestCloudWebhookSecurity(t *testing.T) {
 	if st, _ := postWebhook(t, e, body, cloud.Sign(body, whsec, time.Now().Add(-10*time.Minute))); st != 400 {
 		t.Fatalf("stale: %d", st)
 	}
+	tampered := append([]byte(nil), body...)
+	tampered[len(tampered)/2] ^= 0x01
+	if st, _ := postWebhook(t, e, tampered, sig); st != 400 {
+		t.Fatalf("tampered body: %d", st)
+	}
 	// A valid event is processed once; the replay is acknowledged as a duplicate.
 	if st, out := postWebhook(t, e, body, sig); st != 200 || out["duplicate"] == true {
 		t.Fatalf("valid: %d %v", st, out)

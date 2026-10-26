@@ -74,54 +74,12 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		bad(w, err)
 		return
 	}
-	ip := s.clientIP(r)
-	email := strings.ToLower(strings.TrimSpace(in.Email))
-	// Lock per account+IP (so a third party cannot lock a user out from
-	// elsewhere) and, with a 5x higher threshold, per IP against spraying.
-	acct, spray := "login|"+email+"|"+ip, "spray|"+ip
-	for _, k := range []string{acct, spray} {
-		if locked, d := s.lockout.locked(k); locked {
-			w.Header().Set("Retry-After", itoa(int(d.Seconds())+1))
-			writeError(w, http.StatusTooManyRequests, "rate_limit_error", "login_locked_out", "Too many failed sign-in attempts; try again later.")
-			return
-		}
-	}
-	if !s.pwSlot(w, r) {
+	u, org, orgs, fail := s.loginUser(w, r, in.Email, in.Password)
+	if fail != nil {
+		s.writeLoginFailure(w, fail)
 		return
 	}
-	defer s.pwFree()
-	u, err := s.store.UserByEmail(r.Context(), email)
-	ok := false
-	if err == nil && !u.Disabled {
-		ok = secure.VerifyPassword(in.Password, u.PasswordHash)
-	} else {
-		secure.VerifyDummy(in.Password) // equal timing for unknown users
-	}
-	if !ok {
-		s.metrics.adminFails.Inc()
-		s.lockout.fail(acct)
-		s.sprayFail(spray)
-		if u != nil {
-			orgs, _ := s.store.ListOrgs(r.Context(), u.ID)
-			for _, o := range orgs {
-				s.auditSystem(r, o.ID, u, "auth.login_failed", http.StatusUnauthorized, nil)
-			}
-		}
-		writeError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_credentials", "Invalid email or password.")
-		return
-	}
-	s.lockout.success(acct)
-	orgs, err := s.store.ListOrgs(r.Context(), u.ID)
-	if err != nil || len(orgs) == 0 {
-		writeError(w, http.StatusForbidden, "permission_error", "no_org", "This account is not a member of any organization.")
-		return
-	}
-	if err := s.startSession(w, r, u, orgs[0].ID); err != nil {
-		storeErr(w, err)
-		return
-	}
-	s.auditSystem(r, orgs[0].ID, u, "auth.login", 200, nil)
-	writeJSON(w, 200, map[string]any{"user": u, "org": orgs[0], "orgs": orgs})
+	writeJSON(w, 200, map[string]any{"user": u, "org": org, "orgs": orgs})
 }
 
 // sprayFail counts per-IP failures toward a 5x higher threshold.
@@ -292,68 +250,26 @@ func (s *Server) authAcceptInvite(w http.ResponseWriter, r *http.Request) {
 }
 
 // authSignup creates an account and a new organization (only when
-// auth.allow_signup is on).
+// auth.allow_signup is on). The dashboard calls this; public /signup is the
+// customer form and does not offer the admin token.
 func (s *Server) authSignup(w http.ResponseWriter, r *http.Request) {
-	if !s.cfg.Auth.AllowSignup {
-		writeError(w, http.StatusForbidden, "permission_error", "signup_disabled", "Sign-up is disabled on this OpenGate; ask an admin for an invite.")
-		return
-	}
-	var in struct {
-		Email    string `json:"email"`
-		Name     string `json:"name"`
-		Password string `json:"password"`
-		OrgName  string `json:"org_name"`
-	}
+	var in signupInput
 	if err := decode(r, &in); err != nil {
 		bad(w, err)
 		return
 	}
-	if locked, _ := s.lockout.locked("signup|" + s.clientIP(r)); locked {
-		writeError(w, http.StatusTooManyRequests, "rate_limit_error", "login_locked_out", "Too many attempts; try again later.")
+	u, o, verify, fail := s.signupCustomer(w, r, in)
+	if fail != nil {
+		s.writeLoginFailure(w, fail)
 		return
 	}
-	if !s.pwSlot(w, r) {
-		return
+	if !verify {
+		if err := s.startSession(w, r, u, o.ID); err != nil {
+			storeErr(w, err)
+			return
+		}
 	}
-	defer s.pwFree()
-	hash, err := secure.HashPassword(in.Password)
-	if err != nil {
-		bad(w, err)
-		return
-	}
-	if strings.TrimSpace(in.OrgName) == "" {
-		in.OrgName = strings.TrimSpace(in.Name + "'s organization")
-	}
-	u, err := s.store.CreateUser(r.Context(), in.Email, in.Name, hash)
-	if errors.Is(err, store.ErrConflict) {
-		s.lockout.fail("signup|" + s.clientIP(r))
-		writeError(w, http.StatusConflict, "invalid_request_error", "email_taken", "An account with this email already exists; sign in instead.")
-		return
-	}
-	if err != nil {
-		bad(w, err)
-		return
-	}
-	o, err := s.store.CreateOrg(r.Context(), in.OrgName)
-	if err != nil {
-		bad(w, err)
-		return
-	}
-	if err := s.store.AddMember(r.Context(), o.ID, u.ID, store.RoleOwner); err != nil {
-		storeErr(w, err)
-		return
-	}
-	if err := s.startSession(w, r, u, o.ID); err != nil {
-		storeErr(w, err)
-		return
-	}
-	if s.cloud != nil {
-		// Throttle account creation per IP (admin_lockout thresholds): a
-		// burst of sign-ups from one address locks further sign-ups for a while.
-		s.lockout.fail("signup|" + s.clientIP(r))
-	}
-	s.auditSystem(r, o.ID, u, "auth.signup", 201, nil)
-	writeJSON(w, http.StatusCreated, map[string]any{"user": u, "org": o})
+	writeJSON(w, http.StatusCreated, map[string]any{"user": u, "org": o, "verification_required": verify})
 }
 
 func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {

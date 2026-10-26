@@ -1255,8 +1255,9 @@ function showAuth(mode) {
       if (mode === "invite") { await api("/auth/invites/accept", { method: "POST", quiet: true, body: { token: invite.token, name: f.name.value, password: f.pw.value } }); invite = null; history.replaceState(null, "", "#overview"); }
       else if (mode === "token") { sessionStorage.setItem(TOKEN_KEY, f.token.value.trim()); try { await api("/auth/me", { quiet: true }); } catch { sessionStorage.removeItem(TOKEN_KEY); throw new Error("Invalid admin token."); } }
       else if (mode === "signup") {
-        await api("/auth/signup", { method: "POST", quiet: true, body: { email: f.email.value, name: f.name.value, password: f.pw.value, org_name: f.org.value } });
+        const created = await api("/auth/signup", { method: "POST", quiet: true, body: { email: f.email.value, name: f.name.value, password: f.pw.value, org_name: f.org.value } });
         sessionStorage.removeItem(PLAN_KEY);
+        if (created.verification_required) { err.textContent = "Check your email to verify your account, then sign in."; btn.disabled = false; return; }
         if (plan && plan !== "free") { try { location.href = (await api("/billing/checkout", { method: "POST", quiet: true, body: { plan } })).url; return; } catch { location.hash = "#billing"; } }
       } else await api("/auth/login", { method: "POST", quiet: true, body: { email: f.email.value, password: f.pw.value } });
       await boot();
@@ -1272,11 +1273,13 @@ function showAuth(mode) {
   const left = el("div", { class: "l" },
     el("div", { class: "lh" }, logoSvg(13), el("b", {}, "OpenGate"), el("span", { class: "alt" }, mode === "signup" ? ["Already have one? ", el("button", { onclick: () => showAuth("signin") }, "Sign in")] : cfg.allow_signup && mode !== "invite" ? ["New here? ", el("button", { onclick: () => showAuth("signup") }, "Create account")] : el("a", { href: "landing.html" }, "About OpenGate"))),
     el("form", { class: "f", onsubmit: submit }, el("h1", {}, title[0], el("br"), el("span", { class: "gt" }, title[1])), el("p", { class: "lead" }, lead), tabs, fields,
+      mode === "signup" ? el("p", { class: "m" }, ["By creating an account you agree to the ", el("a", { href: "/terms" }, "Terms"), " and ", el("a", { href: "/privacy" }, "Privacy Policy"), "."]) : null,
+      mode === "signin" ? el("p", { class: "m" }, el("a", { href: "/forgot-password" }, "Forgot password?")) : null,
       el("button", { class: "bp", type: "submit" }, mode === "signup" ? "Create account →" : mode === "invite" ? "Join " + (invite ? invite.org : "") + " →" : "Sign in →"), err,
       mode !== "token" ? el("div", { class: "sso" }, "Continue with SSO", SOON()) : null,
       !cfg.allow_signup && mode === "signin" ? el("div", { class: "info" }, "Accounts are invite-only on this gateway. Ask an admin for an invite link, or use the admin token.") : null,
       el("div", { class: "self" }, "Prefer to run it yourself?", el("div", { class: "cmd" }, el("span", { class: "grn" }, "$ "), "docker compose up -d"))),
-    el("div", { class: "foot" }, "Open-source core · Apache-2.0" + (cfg.version ? " · " + String(cfg.version).replace(/^v?/, "v") : "")));
+    el("div", { class: "foot" }, "Open-source core · Apache-2.0" + (cfg.version ? " · " + String(cfg.version).replace(/^v?/, "v") : ""), " · ", el("a", { href: "/terms" }, "Terms"), " · ", el("a", { href: "/privacy" }, "Privacy"), " · ", el("a", { href: "/pricing" }, "Pricing")));
   const sc = el("div", { class: "sc" },
     el("div", { class: "sh" }, el("span", { class: "dot", style: { width: "8px", height: "8px", background: "#F06A6A", boxShadow: "0 0 10px #F06A6A" } }), el("span", { class: "m", style: { fontSize: "12px" } }, "looping-agent · 03:12 UTC"), el("span", { class: "st bk", style: { marginLeft: "auto" } }, "Killed")),
     el("div", { class: "big" }, "Looping agent stopped at ", el("span", { class: "grn" }, "its $250 cap"), ",", el("br"), el("span", { class: "mut" }, "not at the end of the month.")),
