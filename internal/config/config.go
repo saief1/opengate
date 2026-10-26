@@ -113,6 +113,10 @@ type MCPConfig struct {
 // (Checkout, Customer Portal, webhooks).
 type CloudConfig struct {
 	Enabled bool `yaml:"enabled"`
+	// BillingDisabled (OPENGATE_BILLING_DISABLED=true) runs cloud mode
+	// without Stripe: no keys are required, checkout/portal/webhook routes
+	// answer 503 billing_not_enabled, and every org stays on DefaultPlan.
+	BillingDisabled bool `yaml:"billing_disabled"`
 	// PublicURL is the externally visible base URL (https://cloud.example.com);
 	// Stripe redirects back to it after Checkout and the portal.
 	PublicURL string `yaml:"public_url"`
@@ -457,6 +461,9 @@ func (c *Config) applyEnv() {
 	set(&c.StripeWebhookSecret, "STRIPE_WEBHOOK_SECRET")
 	set(&c.Cloud.PublicURL, "OPENGATE_PUBLIC_URL")
 	set(&c.Plan, "OPENGATE_PLAN")
+	if v := os.Getenv("OPENGATE_BILLING_DISABLED"); v == "1" || strings.EqualFold(v, "true") {
+		c.Cloud.BillingDisabled = true
+	}
 	if v := os.Getenv("OPENGATE_STRIPE_ALLOW_LIVE"); v == "1" || strings.EqualFold(v, "true") {
 		c.StripeAllowLive = true
 	}
@@ -730,7 +737,7 @@ func (c *Config) ValidateStripe() error {
 	if c.Billing.Stripe.Enabled && c.StripeAPIKey == "" {
 		return errors.New("billing.stripe.enabled requires STRIPE_API_KEY in the environment")
 	}
-	if c.Cloud.Enabled {
+	if c.Cloud.Enabled && !c.Cloud.BillingDisabled {
 		if c.StripeAPIKey == "" {
 			return errors.New("cloud.enabled requires STRIPE_API_KEY in the environment")
 		}

@@ -30,6 +30,8 @@ primary_region = "yyz"
   OPENGATE_DATABASE = "/data/opengate-prod.db"
   # No Litestream bucket approved yet; explicit opt-out. Remove once LITESTREAM_BUCKET is set.
   OPENGATE_SQLITE_NO_REPLICA = "1"
+  # No Stripe yet: cloud runs free-plan only; checkout/portal/webhook return 503.
+  OPENGATE_BILLING_DISABLED = "1"
   # Database is a secret, not this file:
   #   Postgres (preferred): OPENGATE_DATABASE=postgres://...
   #   SQLite + Litestream: OPENGATE_DATABASE=/data/opengate.db

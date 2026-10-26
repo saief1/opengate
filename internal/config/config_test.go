@@ -190,3 +190,20 @@ func TestPlanValidation(t *testing.T) {
 		t.Error("unknown plan accepted")
 	}
 }
+
+func TestCloudBillingDisabled(t *testing.T) {
+	t.Setenv("OPENGATE_BILLING_DISABLED", "true")
+	c := Default()
+	c.applyEnv()
+	if !c.Cloud.BillingDisabled {
+		t.Fatal("OPENGATE_BILLING_DISABLED not applied")
+	}
+	c.Cloud.Enabled = true
+	c.Cloud.PublicURL = "https://cloud.example.com"
+	if err := c.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ValidateStripe(); err != nil {
+		t.Fatalf("billing disabled still requires Stripe: %v", err)
+	}
+}
