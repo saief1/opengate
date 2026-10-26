@@ -75,9 +75,16 @@ func TestFlyProdConfig(t *testing.T) {
 			t.Errorf("fly-prod missing %s", want)
 		}
 	}
-	for _, bad := range []string{"OPENGATE_DEMO_MOCK_LISTEN", "OPENGATE_DEMO_TRAFFIC", "OPENGATE_PUBLIC_PLAYGROUND", "127.0.0.1:9090", "source = \"opengate_data\""} {
+	// Names may appear in comments that forbid them. Assignments must not.
+	for _, bad := range []string{
+		"OPENGATE_DEMO_MOCK_LISTEN =",
+		"OPENGATE_DEMO_TRAFFIC =",
+		"OPENGATE_PUBLIC_PLAYGROUND =",
+		"127.0.0.1:9090",
+		"source = \"opengate_data\"",
+	} {
 		if strings.Contains(s, bad) {
-			t.Errorf("fly-prod must not contain %s", bad)
+			t.Errorf("fly-prod must not set %s", bad)
 		}
 	}
 	entry, err := os.ReadFile("../../deploy/fly-prod/entrypoint.sh")
