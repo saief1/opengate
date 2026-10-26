@@ -407,6 +407,19 @@ func (s *Server) pagePrivacy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) pagePricing(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Cloud.BillingDisabled {
+		s.renderPage(w, http.StatusOK, pageView{
+			Title: "Pricing", Heading: "Pricing", Draft: true, Body: "legal",
+			Lead: "OpenGate Cloud is free while paid plans are being finalized. Start free at /signup.",
+			HTML: legalArticle(
+				"Free — $0. 10,000 requests per month, 3 members, 2 projects, 7-day request logs. Self-serve sign-up at /signup.",
+				"Team — Coming soon. 1,000,000 requests per month, 25 members, unlimited projects, 30-day logs, email support. Not yet available for purchase.",
+				"Enterprise — Coming soon. Unlimited requests, contract terms, 1-year logs, priority support.",
+				"Paid plans are not on sale yet; no card is needed and nothing is charged.",
+			),
+		})
+		return
+	}
 	s.renderPage(w, http.StatusOK, pageView{
 		Title: "Pricing", Heading: "Pricing", Draft: true, Body: "legal",
 		Lead: "Draft catalog for OpenGate Cloud. Stripe is the source of truth for anything you charge.",
