@@ -3,10 +3,13 @@
 # From the repo root, after you create the app and secrets (docs/LAUNCH.md):
 #   fly deploy -c deploy/fly-prod/fly.toml
 #
-# App name is a placeholder. Create it yourself; do not reuse the demo app
-# or the demo volume (opengate_data).
-app = "opengate-prod"
-primary_region = "yul"
+# The former demo app "opengate" was converted to production on 2026-10-25
+# (owner-approved). The demo DB is kept on the volume at /data/opengate.db
+# and backed up off-machine; production uses a fresh /data/opengate-prod.db.
+# Litestream is not configured yet (no bucket approved): backups currently
+# rely on Fly volume snapshots.
+app = "opengate"
+primary_region = "yyz"
 
 [build]
   dockerfile = "../../Dockerfile.prod"
@@ -23,7 +26,10 @@ primary_region = "yul"
   OPENGATE_LISTEN = "0.0.0.0:8080"
   OPENGATE_LOG_FORMAT = "json"
   # Placeholder until the hostname is confirmed. Override with a secret if needed.
-  OPENGATE_PUBLIC_URL = "https://opengatehq.com"
+  OPENGATE_PUBLIC_URL = "https://opengate.fly.dev"
+  OPENGATE_DATABASE = "/data/opengate-prod.db"
+  # No Litestream bucket approved yet; explicit opt-out. Remove once LITESTREAM_BUCKET is set.
+  OPENGATE_SQLITE_NO_REPLICA = "1"
   # Database is a secret, not this file:
   #   Postgres (preferred): OPENGATE_DATABASE=postgres://...
   #   SQLite + Litestream: OPENGATE_DATABASE=/data/opengate.db
@@ -33,9 +39,9 @@ primary_region = "yul"
 
 # SQLite only. Create a new volume on this app. Never mount the demo volume.
 #   fly volumes create opengate_prod_data --size 10 -a opengate-prod
-# [[mounts]]
-#   source = "opengate_prod_data"
-#   destination = "/data"
+[mounts]
+  source = "opengate_data"
+  destination = "/data"
 
 [http_service]
   internal_port = 8080
@@ -59,5 +65,5 @@ primary_region = "yul"
   path = "/livez"
 
 [[vm]]
-  size = "shared-cpu-2x"
-  memory = "1gb"
+  size = "shared-cpu-1x"
+  memory = "512mb"
